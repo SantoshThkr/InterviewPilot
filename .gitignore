@@ -1,0 +1,31 @@
+# Node
+node_modules/
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+npm-debug.log*
+
+# Logs
+logs
+*.log
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Runtime data
+dist/
+build/
+.next/
+
+# Env files
+*.env
+*.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
