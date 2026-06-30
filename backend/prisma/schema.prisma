@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String          @id @default(cuid())
+  clerkId        String          @unique
+  email          String          @unique
+  name           String?
+  streak         Int             @default(0)
+  hoursPracticed Float           @default(0)
+  lastActiveAt   DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  resumes        Resume[]
+  interviews     Interview[]
+  weakAreas      UserWeakArea[]
+}
+
+model Resume {
+  id         String   @id @default(cuid())
+  userId     String
+  fileName   String
+  content    String   @db.Text
+  parsedData Json?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum InterviewStatus {
+  SETUP
+  IN_PROGRESS
+  CODING
+  COMPLETED
+  ABANDONED
+}
+
+enum InterviewType {
+  TECHNICAL
+  HR
+  BEHAVIORAL
+  MANAGERIAL
+  MIXED
+}
+
+model Interview {
+  id           String              @id @default(cuid())
+  userId       String
+  status       InterviewStatus     @default(SETUP)
+  type         InterviewType       @default(MIXED)
+  role         String
+  experience   String
+  difficulty   String
+  personality  String
+  topics       String[]
+  resumeId     String?
+  config       Json?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  durationSecs Int?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages     InterviewMessage[]
+  report       InterviewReport?
+  codingSubs   CodingSubmission[]
+  events       InterviewEvent[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum MessageRole {
+  INTERVIEWER
+  CANDIDATE
+  SYSTEM
+}
+
+model InterviewMessage {
+  id          String      @id @default(cuid())
+  interviewId String
+  role        MessageRole
+  content     String      @db.Text
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+  interview   Interview   @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+}
+
+model InterviewReport {
+  id                  String    @id @default(cuid())
+  interviewId         String    @unique
+  overallScore        Float
+  communicationScore  Float
+  technicalScore      Float
+  confidenceScore     Float
+  problemSolvingScore Float
+  codingScore         Float?
+  systemDesignScore   Float?
+  behavioralScore     Float?
+  strengths           String[]
+  weaknesses          String[]
+  knowledgeGaps       String[]
+  topicsToRevise      String[]
+  mistakes            String[]
+  learningRoadmap     Json?
+  readinessPercent    Float
+  summary             String    @db.Text
+  createdAt           DateTime  @default(now())
+  interview           Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+}
+
+model CodingSubmission {
+  id              String    @id @default(cuid())
+  interviewId     String
+  problemId       String
+  problemTitle    String
+  language        String
+  code            String    @db.Text
+  difficulty      String
+  timeSpentSecs   Int       @default(0)
+  hintsUsed       Int       @default(0)
+  compileErrors   Int       @default(0)
+  testsPassed     Int       @default(0)
+  testsTotal      Int       @default(0)
+  testResults     Json?
+  feedback        Json?
+  createdAt       DateTime  @default(now())
+  interview       Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+}
+
+enum EventType {
+  FOCUS_LOST
+  COPY_PASTE
+  FULLSCREEN_EXIT
+  HINT_REQUESTED
+}
+
+model InterviewEvent {
+  id          String    @id @default(cuid())
+  interviewId String
+  type        EventType
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+}
+
+model UserWeakArea {
+  id           String   @id @default(cuid())
+  userId       String
+  topic        String
+  struggleCount Int     @default(1)
+  lastSeenAt   DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topic])
+  @@index([userId])
+}
