@@ -7,9 +7,9 @@ import { useAuth, useUser } from '@clerk/nextjs';
 import { AppNav } from '@/components/layout/app-nav';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { useApiAuth } from '@/hooks/use-api-auth';
-import { streamMessage, apiFetch } from '@/lib/api';
+import { streamMessage } from '@/lib/api';
 import { formatDuration } from '@/lib/utils';
 
 interface Message {

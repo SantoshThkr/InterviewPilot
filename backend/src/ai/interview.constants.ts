@@ -124,7 +124,8 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Express skepticism when answers seem rehearsed',
       'Apply time pressure verbally',
     ],
-    followUpStyle: 'Relentlessly drill down until the candidate demonstrates mastery or admits gaps',
+    followUpStyle:
+      'Relentlessly drill down until the candidate demonstrates mastery or admits gaps',
   },
   'Google style': {
     tone: 'curious and analytical',
@@ -134,7 +135,8 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Probe scalability and edge cases',
       'Value structured problem decomposition',
     ],
-    followUpStyle: 'Ask "What if the data grows to one million users?" and similar scale questions',
+    followUpStyle:
+      'Ask "What if the data grows to one million users?" and similar scale questions',
   },
   'Amazon style': {
     tone: 'structured and leadership-focused',
@@ -144,7 +146,8 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Probe deeply into specific examples from resume',
       'Ask about failures and what was learned',
     ],
-    followUpStyle: 'Ask for specific metrics, your exact role, and what you would do differently',
+    followUpStyle:
+      'Ask for specific metrics, your exact role, and what you would do differently',
   },
   'Startup style': {
     tone: 'fast-moving and practical',
@@ -154,7 +157,8 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Prioritize practical trade-offs over textbook answers',
       'Move quickly between topics',
     ],
-    followUpStyle: 'Ask how they would ship this in a week with limited resources',
+    followUpStyle:
+      'Ask how they would ship this in a week with limited resources',
   },
   'Fast-paced': {
     tone: 'energetic with minimal pauses',
@@ -164,12 +168,17 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Stack follow-up questions rapidly',
       'Create a sense of time pressure',
     ],
-    followUpStyle: 'Ask rapid-fire follow-ups without waiting for perfect answers',
+    followUpStyle:
+      'Ask rapid-fire follow-ups without waiting for perfect answers',
   },
 };
 
-export function buildSystemPrompt(config: InterviewConfig, resumeContent?: string): string {
-  const personality = PERSONALITY_CONFIGS[config.personality] ?? PERSONALITY_CONFIGS.Neutral;
+export function buildSystemPrompt(
+  config: InterviewConfig,
+  resumeContent?: string,
+): string {
+  const personality =
+    PERSONALITY_CONFIGS[config.personality] ?? PERSONALITY_CONFIGS.Neutral;
 
   const typeInstructions: Record<string, string> = {
     TECHNICAL: `Focus on deep technical questions about: ${config.topics.join(', ')}.

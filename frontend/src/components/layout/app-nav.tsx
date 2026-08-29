@@ -24,7 +24,7 @@ export function AppNav() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold">
             IF
           </div>
-          <span className="font-semibold text-slate-100">InterviewForge</span>
+          <span className="font-semibold text-slate-100">InterviewPilot</span>
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex">

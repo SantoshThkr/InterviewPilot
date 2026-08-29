@@ -57,7 +57,9 @@ export class ResumeService {
     const mime = file.mimetype;
 
     if (mime === 'application/pdf') {
-      const pdfParse = pdfParseModule as unknown as (buffer: Buffer) => Promise<{ text: string }>;
+      const pdfParse = pdfParseModule as unknown as (
+        buffer: Buffer,
+      ) => Promise<{ text: string }>;
       const data = await pdfParse(file.buffer);
       return data.text;
     }

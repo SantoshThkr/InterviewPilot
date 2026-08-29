@@ -11,7 +11,11 @@ import { InterviewConfig } from '../ai/interview.constants';
 import { CodingService } from '../coding/coding.service';
 import { getProblemById } from '../coding/coding.problems';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateInterviewDto, RecordEventDto, SubmitCodingDto } from './dto/interview.dto';
+import {
+  CreateInterviewDto,
+  RecordEventDto,
+  SubmitCodingDto,
+} from './dto/interview.dto';
 
 @Injectable()
 export class InterviewsService {
@@ -241,7 +245,11 @@ export class InterviewsService {
 
   async submitCoding(user: User, id: string, dto: SubmitCodingDto) {
     await this.findOne(user, id);
-    const result = this.codingService.runTests(dto.problemId, dto.code, dto.language);
+    const result = this.codingService.runTests(
+      dto.problemId,
+      dto.code,
+      dto.language,
+    );
     const problem = getProblemById(dto.problemId);
 
     return this.prisma.codingSubmission.create({

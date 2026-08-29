@@ -48,8 +48,16 @@ export const CODING_PROBLEMS: CodingProblem[] = [
     pass`,
     },
     testCases: [
-      { input: { nums: [2, 7, 11, 15], target: 9 }, expected: [0, 1], visible: true },
-      { input: { nums: [3, 2, 4], target: 6 }, expected: [1, 2], visible: true },
+      {
+        input: { nums: [2, 7, 11, 15], target: 9 },
+        expected: [0, 1],
+        visible: true,
+      },
+      {
+        input: { nums: [3, 2, 4], target: 6 },
+        expected: [1, 2],
+        visible: true,
+      },
       { input: { nums: [3, 3], target: 6 }, expected: [0, 1], visible: false },
     ],
   },
@@ -111,12 +119,41 @@ export const CODING_PROBLEMS: CodingProblem[] = [
     },
     testCases: [
       {
-        input: { intervals: [[1, 3], [2, 6], [8, 10], [15, 18]] },
-        expected: [[1, 6], [8, 10], [15, 18]],
+        input: {
+          intervals: [
+            [1, 3],
+            [2, 6],
+            [8, 10],
+            [15, 18],
+          ],
+        },
+        expected: [
+          [1, 6],
+          [8, 10],
+          [15, 18],
+        ],
         visible: true,
       },
-      { input: { intervals: [[1, 4], [4, 5]] }, expected: [[1, 5]], visible: true },
-      { input: { intervals: [[1, 4], [0, 4]] }, expected: [[0, 4]], visible: false },
+      {
+        input: {
+          intervals: [
+            [1, 4],
+            [4, 5],
+          ],
+        },
+        expected: [[1, 5]],
+        visible: true,
+      },
+      {
+        input: {
+          intervals: [
+            [1, 4],
+            [0, 4],
+          ],
+        },
+        expected: [[0, 4]],
+        visible: false,
+      },
     ],
   },
   {
@@ -127,7 +164,8 @@ export const CODING_PROBLEMS: CodingProblem[] = [
       'Design a data structure that follows the constraints of a Least Recently Used (LRU) cache. Implement the LRUCache class with get and put methods in O(1) time.',
     examples: [
       {
-        input: '["LRUCache","put","put","get","put","get","get"] [[2],[1,1],[2,2],[1],[3,3],[2],[3]]',
+        input:
+          '["LRUCache","put","put","get","put","get","get"] [[2],[1,1],[2,2],[1],[3,3],[2],[3]]',
         output: '[null,null,null,1,null,-1,3]',
       },
     ],

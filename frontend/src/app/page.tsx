@@ -1,9 +1,13 @@
+'use client';
+
 import Link from 'next/link';
-import { SignInButton, SignUpButton } from '@clerk/nextjs';
+import { SignInButton, SignUpButton, useUser } from '@clerk/nextjs';
 import { ArrowRight, Brain, Code2, Mic, Shield, Target } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export default function LandingPage() {
+  const { isSignedIn } = useUser();
+
   return (
     <div className="min-h-screen">
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
@@ -11,15 +15,23 @@ export default function LandingPage() {
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 font-bold">
             IF
           </div>
-          <span className="text-lg font-semibold">InterviewForge</span>
+          <span className="text-lg font-semibold">InterviewPilot</span>
         </div>
         <div className="flex gap-3">
-          <SignInButton mode="modal">
-            <Button variant="ghost">Sign in</Button>
-          </SignInButton>
-          <SignUpButton mode="modal">
-            <Button>Get Started</Button>
-          </SignUpButton>
+          {!isSignedIn ? (
+            <>
+              <SignInButton mode="modal">
+                <Button variant="ghost">Sign in</Button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <Button>Get Started</Button>
+              </SignUpButton>
+            </>
+          ) : (
+            <Link href="/dashboard">
+              <Button>Go to dashboard</Button>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -38,11 +50,19 @@ export default function LandingPage() {
             like Amazon, Google, and Microsoft.
           </p>
           <div className="mt-10 flex flex-wrap justify-center gap-4">
-            <SignUpButton mode="modal">
-              <Button size="lg" className="gap-2">
-                Start Practicing <ArrowRight className="h-4 w-4" />
-              </Button>
-            </SignUpButton>
+            {!isSignedIn ? (
+              <SignUpButton mode="modal">
+                <Button size="lg" className="gap-2">
+                  Start Practicing <ArrowRight className="h-4 w-4" />
+                </Button>
+              </SignUpButton>
+            ) : (
+              <Link href="/dashboard">
+                <Button size="lg" className="gap-2">
+                  Go to Dashboard <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
+            )}
             <Link href="#features">
               <Button size="lg" variant="secondary">
                 See Features

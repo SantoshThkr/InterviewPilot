@@ -4,6 +4,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -22,55 +23,51 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing authorization token');
     }
 
-    const token = authHeader.slice(7);
+    const token = authHeader.slice(7).trim();
+    if (!token) {
+      throw new UnauthorizedException('Missing authorization token');
+    }
+
+    const secretKey = this.config.get<string>('CLERK_SECRET_KEY');
+    if (!secretKey) {
+      throw new UnauthorizedException('Clerk secret key is not configured');
+    }
+
+    const frontendOrigin = this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
+    const authorizedParties = Array.from(
+      new Set([frontendOrigin, 'http://localhost:3000']),
+    );
 
     try {
-      const response = await fetch('https://api.clerk.com/v1/sessions/verify', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.config.get('CLERK_SECRET_KEY')}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token }),
-      });
+  const verifiedToken = await verifyToken(token, {
+    secretKey,
+    authorizedParties,
+  });
 
-      if (!response.ok) {
-        const userId = request.headers['x-clerk-user-id'] as string;
-        const email = request.headers['x-clerk-user-email'] as string;
+  if (!verifiedToken?.sub) {
+    throw new UnauthorizedException('Authentication failed');
+  }
 
-        if (userId && email && process.env.NODE_ENV === 'development') {
-          request.user = await this.ensureUser(userId, email);
-          return true;
-        }
-        throw new UnauthorizedException('Invalid token');
-      }
+  const clerkId = verifiedToken.sub;
 
-      const session = await response.json();
-      const clerkId = session.user_id;
-      const userResponse = await fetch(
-        `https://api.clerk.com/v1/users/${clerkId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${this.config.get('CLERK_SECRET_KEY')}`,
-          },
-        },
-      );
-      const clerkUser = await userResponse.json();
-      const email =
-        clerkUser.email_addresses?.[0]?.email_address ?? `${clerkId}@clerk.dev`;
+  const clerkClient = createClerkClient({ secretKey });
+  const clerkUser = await clerkClient.users.getUser(clerkId);
 
-      request.user = await this.ensureUser(clerkId, email, clerkUser.first_name);
-      return true;
-    } catch {
-      const userId = request.headers['x-clerk-user-id'] as string;
-      const email = request.headers['x-clerk-user-email'] as string;
+  const email =
+    clerkUser.emailAddresses?.[0]?.emailAddress ??
+    `${clerkId}@clerk.dev`;
 
-      if (userId && email) {
-        request.user = await this.ensureUser(userId, email);
-        return true;
-      }
-      throw new UnauthorizedException('Authentication failed');
-    }
+  request.user = await this.ensureUser(
+    clerkId,
+    email,
+    clerkUser.firstName ?? undefined,
+  );
+
+  return true;
+} catch (error) {
+  console.error('Clerk authentication error:', error);
+  throw new UnauthorizedException('Authentication failed');
+}
   }
 
   private async ensureUser(clerkId: string, email: string, name?: string) {

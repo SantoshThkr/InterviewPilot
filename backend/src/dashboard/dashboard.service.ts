@@ -40,7 +40,7 @@ export class DashboardService {
 
     const readinessScore =
       completed.length > 0
-        ? completed[0].report?.readinessPercent ?? avgScore
+        ? (completed[0].report?.readinessPercent ?? avgScore)
         : 0;
 
     const behavioralAvg =

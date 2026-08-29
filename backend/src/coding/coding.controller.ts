@@ -22,9 +22,11 @@ export class CodingController {
   }
 
   @Post('run')
-  runCode(
-    @Body() body: { problemId: string; code: string; language: string },
-  ) {
-    return this.codingService.runTests(body.problemId, body.code, body.language);
+  runCode(@Body() body: { problemId: string; code: string; language: string }) {
+    return this.codingService.runTests(
+      body.problemId,
+      body.code,
+      body.language,
+    );
   }
 }

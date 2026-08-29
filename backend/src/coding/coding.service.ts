@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import vm from 'node:vm';
 import { CodingProblem, getProblemById } from './coding.problems';
 
 export interface TestResult {
@@ -34,7 +35,7 @@ export class CodingService {
     const problem = getProblemById(problemId);
     if (!problem) throw new BadRequestException('Problem not found');
 
-    if (language === 'python' || language === 'java' || language === 'cpp') {
+    if (!['javascript', 'typescript'].includes(language)) {
       return {
         results: problem.testCases.map((tc) => ({
           input: tc.input,
@@ -42,7 +43,7 @@ export class CodingService {
           actual: null,
           passed: false,
           visible: tc.visible,
-          error: `${language} execution requires external runner — use JavaScript/TypeScript for live testing`,
+          error: `${language} execution is not supported in this environment. Use JavaScript or TypeScript only.`,
         })),
         passed: 0,
         total: problem.testCases.length,
@@ -85,23 +86,43 @@ export class CodingService {
   }
 
   private executeJs(problem: CodingProblem, code: string, input: unknown): unknown {
+    const dangerousPattern =
+      /(eval\s*\(|new\s+Function\s*\(|Function\s*\(|require\s*\(|import\s*\(|process\b|global\b|window\b|document\b|fetch\s*\(|setTimeout\s*\(|setInterval\s*\(|clearTimeout\s*\(|clearInterval\s*\()/i;
+
     const cleanCode = code
       .replace(/export\s+(default\s+)?/g, '')
-      .replace(/:\s*(number|string|boolean|void|any)(\[\])?(\s*\|\s*-1)?/g, '');
+      .replace(/:\s*(number|string|boolean|void|any)(\[\])?(\s*\|\s*-1)?/g, '')
+      .trim();
+
+    if (!cleanCode || dangerousPattern.test(cleanCode)) {
+      throw new Error('Unsafe code patterns are not allowed in the execution sandbox.');
+    }
 
     const inputEntries = Object.entries(input as Record<string, unknown>);
-    const args = inputEntries.map(([, v]) => JSON.stringify(v));
     const argNames = inputEntries.map(([k]) => k);
 
     if (problem.functionName === 'LRUCache') {
-      throw new Error('LRU Cache requires class-based testing — submit for AI review');
+      throw new Error('LRU Cache requires a custom class-based runner; submit for AI review instead.');
     }
 
-    const fn = new Function(
-      `${cleanCode}; return ${problem.functionName}(${argNames.join(', ')});`,
+    const sandbox = {
+      console: { log: () => undefined },
+      Math,
+      JSON,
+      Object,
+      Array,
+      String,
+      Number,
+      Boolean,
+      Date,
+      Map,
+      Set,
+    };
+
+    const script = new vm.Script(
+      `(() => { ${cleanCode}; return ${problem.functionName}(${argNames.join(', ')}); })();`,
     );
 
-    const parsedArgs = inputEntries.map(([, v]) => v);
-    return fn(...parsedArgs);
+    return script.runInNewContext(sandbox, { timeout: 250 });
   }
 }

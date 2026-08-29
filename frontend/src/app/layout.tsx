@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'InterviewForge — AI Mock Interview Platform',
+  title: 'InterviewPilot — AI Mock Interview Platform',
   description:
     'Simulate real software engineering interviews with AI. Practice technical, behavioral, and coding rounds.',
 };

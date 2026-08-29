@@ -6,8 +6,18 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: process.env.FRONTEND_URL ? process.env.FRONTEND_URL : true,
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+      'x-clerk-user-id',
+      'x-clerk-user-email',
+    ],
   });
 
   app.useGlobalPipes(
@@ -23,4 +33,5 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Interview Platform API running on http://localhost:${port}`);
 }
-bootstrap();
+
+void bootstrap();

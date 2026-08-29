@@ -8,14 +8,36 @@ import {
   InterviewConfig,
 } from './interview.constants';
 
+export interface InterviewReportPayload {
+  overallScore?: number;
+  communicationScore?: number;
+  technicalScore?: number;
+  confidenceScore?: number;
+  problemSolvingScore?: number;
+  codingScore?: number | null;
+  systemDesignScore?: number | null;
+  behavioralScore?: number | null;
+  strengths?: string[];
+  weaknesses?: string[];
+  knowledgeGaps?: string[];
+  topicsToRevise?: string[];
+  mistakes?: string[];
+  learningRoadmap?: Array<{ topic: string; priority?: string; resources?: string[] }>;
+  readinessPercent?: number;
+  summary?: string;
+}
+
 @Injectable()
 export class AiService {
   private openai: OpenAI;
 
   constructor(private config: ConfigService) {
-    this.openai = new OpenAI({
-      apiKey: this.config.get<string>('OPENAI_API_KEY'),
-    });
+    const apiKey = this.config.get<string>('OPENAI_API_KEY');
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY is not configured. Set it in backend/.env');
+    }
+
+    this.openai = new OpenAI({ apiKey });
   }
 
   async generateOpening(
@@ -83,7 +105,7 @@ export class AiService {
   async generateReport(
     config: InterviewConfig,
     messages: { role: string; content: string }[],
-  ) {
+  ): Promise<InterviewReportPayload> {
     const prompt = buildReportPrompt(messages, config);
 
     const completion = await this.openai.chat.completions.create({
@@ -94,7 +116,56 @@ export class AiService {
     });
 
     const raw = completion.choices[0]?.message?.content ?? '{}';
-    return JSON.parse(raw);
+
+    try {
+      const parsed = JSON.parse(raw) as InterviewReportPayload;
+      return {
+        overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : 0,
+        communicationScore:
+          typeof parsed.communicationScore === 'number' ? parsed.communicationScore : 0,
+        technicalScore: typeof parsed.technicalScore === 'number' ? parsed.technicalScore : 0,
+        confidenceScore: typeof parsed.confidenceScore === 'number' ? parsed.confidenceScore : 0,
+        problemSolvingScore:
+          typeof parsed.problemSolvingScore === 'number' ? parsed.problemSolvingScore : 0,
+        codingScore:
+          typeof parsed.codingScore === 'number' || parsed.codingScore === null
+            ? parsed.codingScore
+            : null,
+        systemDesignScore:
+          typeof parsed.systemDesignScore === 'number' || parsed.systemDesignScore === null
+            ? parsed.systemDesignScore
+            : null,
+        behavioralScore:
+          typeof parsed.behavioralScore === 'number' || parsed.behavioralScore === null
+            ? parsed.behavioralScore
+            : null,
+        strengths: Array.isArray(parsed.strengths) ? parsed.strengths : [],
+        weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses : [],
+        knowledgeGaps: Array.isArray(parsed.knowledgeGaps) ? parsed.knowledgeGaps : [],
+        topicsToRevise: Array.isArray(parsed.topicsToRevise) ? parsed.topicsToRevise : [],
+        mistakes: Array.isArray(parsed.mistakes) ? parsed.mistakes : [],
+        learningRoadmap: Array.isArray(parsed.learningRoadmap) ? parsed.learningRoadmap : [],
+        readinessPercent:
+          typeof parsed.readinessPercent === 'number' ? parsed.readinessPercent : 0,
+        summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      };
+    } catch {
+      return {
+        overallScore: 0,
+        communicationScore: 0,
+        technicalScore: 0,
+        confidenceScore: 0,
+        problemSolvingScore: 0,
+        strengths: [],
+        weaknesses: [],
+        knowledgeGaps: [],
+        topicsToRevise: [],
+        mistakes: [],
+        learningRoadmap: [],
+        readinessPercent: 0,
+        summary: 'AI report generation failed to return valid JSON.',
+      };
+    }
   }
 
   async analyzeResume(content: string) {
@@ -121,10 +192,39 @@ export class AiService {
     });
 
     const raw = completion.choices[0]?.message?.content ?? '{}';
-    return JSON.parse(raw);
+
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        companies: Array.isArray(parsed.companies) ? parsed.companies : [],
+        projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+        technologies: Array.isArray(parsed.technologies) ? parsed.technologies : [],
+        experienceYears:
+          typeof parsed.experienceYears === 'number' ? parsed.experienceYears : 0,
+        achievements: Array.isArray(parsed.achievements) ? parsed.achievements : [],
+        careerGaps: Array.isArray(parsed.careerGaps) ? parsed.careerGaps : [],
+        suggestedQuestionTopics: Array.isArray(parsed.suggestedQuestionTopics)
+          ? parsed.suggestedQuestionTopics
+          : [],
+      };
+    } catch {
+      return {
+        companies: [],
+        projects: [],
+        technologies: [],
+        experienceYears: 0,
+        achievements: [],
+        careerGaps: [],
+        suggestedQuestionTopics: [],
+      };
+    }
   }
 
-  async generateCodingHint(problem: string, code: string, attempt: number): Promise<string> {
+  async generateCodingHint(
+    problem: string,
+    code: string,
+    attempt: number,
+  ): Promise<string> {
     const hintLevel =
       attempt === 1
         ? 'Give a very subtle nudge — point toward the right direction without revealing the solution.'

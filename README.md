@@ -1,4 +1,4 @@
-# InterviewForge — AI Mock Interview Platform
+# InterviewPilot — AI Mock Interview Platform
 
 A full-stack AI-powered interview preparation platform that simulates real software engineering interviews with resume-based questions, live voice mode, coding rounds, adaptive learning, and detailed performance reports.
 
