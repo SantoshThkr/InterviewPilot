@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InterviewStatus, MessageRole } from '@prisma/client';
+import { InterviewStatus, MessageRole, Prisma } from '@prisma/client';
 import type { User } from '@prisma/client';
 import { Response } from 'express';
 import { AiService } from '../ai/ai.service';
@@ -11,6 +11,7 @@ import { InterviewConfig } from '../ai/interview.constants';
 import { CodingService } from '../coding/coding.service';
 import { getProblemById } from '../coding/coding.problems';
 import { PrismaService } from '../prisma/prisma.service';
+import { computeStreak } from './streak';
 import {
   CreateInterviewDto,
   RecordEventDto,
@@ -26,20 +27,7 @@ export class InterviewsService {
   ) {}
 
   async create(user: User, dto: CreateInterviewDto) {
-    let resumeContent: string | undefined;
-
-    if (dto.includeResume && dto.resumeId) {
-      const resume = await this.prisma.resume.findFirst({
-        where: { id: dto.resumeId, userId: user.id },
-      });
-      if (resume) resumeContent = resume.content;
-    } else if (dto.includeResume) {
-      const activeResume = await this.prisma.resume.findFirst({
-        where: { userId: user.id, isActive: true },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (activeResume) resumeContent = activeResume.content;
-    }
+    const resumeContent = await this.resolveResumeContent(user, dto);
 
     const weakAreas = await this.prisma.userWeakArea.findMany({
       where: { userId: user.id },
@@ -63,6 +51,10 @@ export class InterviewsService {
       examMode: dto.examMode ?? false,
     };
 
+    // Generate the opening before creating the row, so an AI failure doesn't
+    // leave a dangling interview with no first message.
+    const opening = await this.ai.generateOpening(config, resumeContent);
+
     const interview = await this.prisma.interview.create({
       data: {
         userId: user.id,
@@ -73,26 +65,19 @@ export class InterviewsService {
         personality: dto.personality,
         topics: adaptiveTopics,
         resumeId: dto.resumeId,
-        config: config as never,
+        config: config as unknown as Prisma.InputJsonValue,
         status: InterviewStatus.IN_PROGRESS,
         startedAt: new Date(),
-      },
-    });
-
-    const opening = await this.ai.generateOpening(config, resumeContent);
-
-    await this.prisma.interviewMessage.create({
-      data: {
-        interviewId: interview.id,
-        role: MessageRole.INTERVIEWER,
-        content: opening,
+        messages: {
+          create: { role: MessageRole.INTERVIEWER, content: opening },
+        },
       },
     });
 
     return { interview, openingMessage: opening };
   }
 
-  async findAll(user: User) {
+  findAll(user: User) {
     return this.prisma.interview.findMany({
       where: { userId: user.id },
       include: { report: true },
@@ -121,24 +106,17 @@ export class InterviewsService {
       throw new BadRequestException('Interview already completed');
     }
 
-    await this.prisma.interviewMessage.create({
-      data: {
-        interviewId: id,
-        role: MessageRole.CANDIDATE,
-        content,
-      },
-    });
-
     const config = interview.config as unknown as InterviewConfig;
-    let resumeContent: string | undefined;
+    const resumeContent = interview.resumeId
+      ? (
+          await this.prisma.resume.findFirst({
+            where: { id: interview.resumeId, userId: user.id },
+          })
+        )?.content
+      : undefined;
 
-    if (interview.resumeId) {
-      const resume = await this.prisma.resume.findUnique({
-        where: { id: interview.resumeId },
-      });
-      resumeContent = resume?.content;
-    }
-
+    // Build the model history in memory. Nothing is persisted until the reply
+    // succeeds, so a failed turn can be retried cleanly.
     const history = [
       ...interview.messages.map((m) => ({
         role:
@@ -150,24 +128,33 @@ export class InterviewsService {
       { role: 'user' as const, content },
     ];
 
-    const fullResponse = await this.ai.streamResponse(
+    const reply = await this.ai.streamResponse(
       config,
       history,
       resumeContent,
       res,
     );
 
-    await this.prisma.interviewMessage.create({
-      data: {
-        interviewId: id,
-        role: MessageRole.INTERVIEWER,
-        content: fullResponse,
-      },
+    if (reply === null) {
+      // Generation failed; an error frame was already sent. Persist nothing.
+      return;
+    }
+
+    await this.prisma.interviewMessage.createMany({
+      data: [
+        { interviewId: id, role: MessageRole.CANDIDATE, content },
+        { interviewId: id, role: MessageRole.INTERVIEWER, content: reply },
+      ],
     });
   }
 
   async complete(user: User, id: string) {
     const interview = await this.findOne(user, id);
+
+    // Idempotent: completing an already-completed interview returns its report.
+    if (interview.status === InterviewStatus.COMPLETED && interview.report) {
+      return interview.report;
+    }
 
     const config = interview.config as unknown as InterviewConfig;
     const messages = interview.messages.map((m) => ({
@@ -177,56 +164,74 @@ export class InterviewsService {
 
     const reportData = await this.ai.generateReport(config, messages);
 
-    const report = await this.prisma.interviewReport.create({
-      data: {
-        interviewId: id,
-        overallScore: reportData.overallScore ?? 0,
-        communicationScore: reportData.communicationScore ?? 0,
-        technicalScore: reportData.technicalScore ?? 0,
-        confidenceScore: reportData.confidenceScore ?? 0,
-        problemSolvingScore: reportData.problemSolvingScore ?? 0,
-        codingScore: reportData.codingScore,
-        systemDesignScore: reportData.systemDesignScore,
-        behavioralScore: reportData.behavioralScore,
-        strengths: reportData.strengths ?? [],
-        weaknesses: reportData.weaknesses ?? [],
-        knowledgeGaps: reportData.knowledgeGaps ?? [],
-        topicsToRevise: reportData.topicsToRevise ?? [],
-        mistakes: reportData.mistakes ?? [],
-        learningRoadmap: reportData.learningRoadmap ?? [],
-        readinessPercent: reportData.readinessPercent ?? 0,
-        summary: reportData.summary ?? '',
-      },
-    });
-
-    for (const gap of reportData.knowledgeGaps ?? []) {
-      await this.prisma.userWeakArea.upsert({
-        where: { userId_topic: { userId: user.id, topic: gap } },
-        update: { struggleCount: { increment: 1 }, lastSeenAt: new Date() },
-        create: { userId: user.id, topic: gap },
-      });
-    }
-
     const durationSecs = interview.startedAt
       ? Math.floor((Date.now() - interview.startedAt.getTime()) / 1000)
       : 0;
 
-    await this.prisma.interview.update({
-      where: { id },
-      data: {
-        status: InterviewStatus.COMPLETED,
-        completedAt: new Date(),
-        durationSecs,
-      },
-    });
+    const report = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.interviewReport.upsert({
+        where: { interviewId: id },
+        create: {
+          interviewId: id,
+          overallScore: reportData.overallScore,
+          communicationScore: reportData.communicationScore,
+          technicalScore: reportData.technicalScore,
+          confidenceScore: reportData.confidenceScore,
+          problemSolvingScore: reportData.problemSolvingScore,
+          codingScore: reportData.codingScore,
+          systemDesignScore: reportData.systemDesignScore,
+          behavioralScore: reportData.behavioralScore,
+          strengths: reportData.strengths,
+          weaknesses: reportData.weaknesses,
+          knowledgeGaps: reportData.knowledgeGaps,
+          topicsToRevise: reportData.topicsToRevise,
+          mistakes: reportData.mistakes,
+          learningRoadmap: reportData.learningRoadmap,
+          readinessPercent: reportData.readinessPercent,
+          summary: reportData.summary,
+        },
+        update: {},
+      });
 
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        hoursPracticed: { increment: durationSecs / 3600 },
-        streak: { increment: 1 },
-        lastActiveAt: new Date(),
-      },
+      for (const gap of reportData.knowledgeGaps) {
+        await tx.userWeakArea.upsert({
+          where: { userId_topic: { userId: user.id, topic: gap } },
+          update: { struggleCount: { increment: 1 }, lastSeenAt: new Date() },
+          create: { userId: user.id, topic: gap },
+        });
+      }
+
+      await tx.interview.update({
+        where: { id },
+        data: {
+          status: InterviewStatus.COMPLETED,
+          completedAt: new Date(),
+          durationSecs,
+        },
+      });
+
+      const completions = await tx.interview.findMany({
+        where: {
+          userId: user.id,
+          status: InterviewStatus.COMPLETED,
+          completedAt: { not: null },
+        },
+        select: { completedAt: true },
+      });
+      const streak = computeStreak(
+        completions.map((c) => c.completedAt as Date),
+      );
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          hoursPracticed: { increment: durationSecs / 3600 },
+          streak,
+          lastActiveAt: new Date(),
+        },
+      });
+
+      return created;
     });
 
     return report;
@@ -245,7 +250,7 @@ export class InterviewsService {
 
   async submitCoding(user: User, id: string, dto: SubmitCodingDto) {
     await this.findOne(user, id);
-    const result = this.codingService.runTests(
+    const result = await this.codingService.runTests(
       dto.problemId,
       dto.code,
       dto.language,
@@ -265,8 +270,28 @@ export class InterviewsService {
         compileErrors: result.compileErrors,
         testsPassed: result.passed,
         testsTotal: result.total,
-        testResults: result.results as never,
+        testResults: result.results as unknown as Prisma.InputJsonValue,
       },
     });
+  }
+
+  private async resolveResumeContent(
+    user: User,
+    dto: CreateInterviewDto,
+  ): Promise<string | undefined> {
+    if (!dto.includeResume) return undefined;
+
+    if (dto.resumeId) {
+      const resume = await this.prisma.resume.findFirst({
+        where: { id: dto.resumeId, userId: user.id },
+      });
+      return resume?.content;
+    }
+
+    const activeResume = await this.prisma.resume.findFirst({
+      where: { userId: user.id, isActive: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return activeResume?.content;
   }
 }

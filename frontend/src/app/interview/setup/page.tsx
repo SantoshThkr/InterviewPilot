@@ -28,6 +28,7 @@ export default function InterviewSetupPage() {
   const { authFetch } = useApiAuth();
   const [config, setConfig] = useState<InterviewConfig | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [role, setRole] = useState('Full Stack Developer');
   const [experience, setExperience] = useState('2-5 years');
@@ -51,6 +52,7 @@ export default function InterviewSetupPage() {
 
   const startInterview = async () => {
     setLoading(true);
+    setError(null);
     try {
       const result = await authFetch<{ interview: { id: string } }>('/interviews', {
         method: 'POST',
@@ -68,9 +70,11 @@ export default function InterviewSetupPage() {
       });
       router.push(`/interview/${result.interview.id}`);
     } catch (err) {
-      console.error(err);
-      alert('Failed to start interview. Check your API connection.');
-    } finally {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to start interview. Please try again.',
+      );
       setLoading(false);
     }
   };
@@ -204,9 +208,28 @@ export default function InterviewSetupPage() {
             </CardContent>
           </Card>
 
-          <Button size="lg" className="w-full" onClick={startInterview} disabled={loading || topics.length === 0}>
-            {loading ? 'Starting...' : 'Start Interview'}
+          {error && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+            >
+              {error}
+            </div>
+          )}
+
+          <Button
+            size="lg"
+            className="w-full"
+            onClick={startInterview}
+            disabled={loading || topics.length === 0}
+          >
+            {loading ? 'Starting…' : 'Start Interview'}
           </Button>
+          {topics.length === 0 && (
+            <p className="text-center text-sm text-slate-500">
+              Select at least one topic to begin.
+            </p>
+          )}
         </div>
       </main>
     </>

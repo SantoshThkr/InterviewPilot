@@ -40,17 +40,38 @@ export default function ReportPage() {
   const { id } = useParams<{ id: string }>();
   const { authFetch } = useApiAuth();
   const [interview, setInterview] = useState<Interview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    authFetch<Interview>(`/interviews/${id}`).then(setInterview).catch(console.error);
+    authFetch<Interview>(`/interviews/${id}`)
+      .then(setInterview)
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
   }, [authFetch, id]);
 
-  if (!interview?.report) {
+  if (loading) {
     return (
       <>
         <AppNav />
         <div className="flex flex-1 items-center justify-center p-20 text-slate-400">
-          Loading report...
+          Loading report…
+        </div>
+      </>
+    );
+  }
+
+  if (error || !interview?.report) {
+    return (
+      <>
+        <AppNav />
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-20 text-center">
+          <p className="text-slate-300">
+            {error ?? 'No report is available for this interview yet.'}
+          </p>
+          <Link href="/dashboard">
+            <Button variant="secondary">Back to dashboard</Button>
+          </Link>
         </div>
       </>
     );

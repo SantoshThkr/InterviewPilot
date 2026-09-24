@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   LineChart,
@@ -44,12 +44,26 @@ export default function DashboardPage() {
   const { authFetch } = useApiAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
     authFetch<DashboardStats>('/dashboard')
       .then(setStats)
-      .catch(console.error)
+      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
+  }, [authFetch]);
+
+  useEffect(() => {
+    let active = true;
+    authFetch<DashboardStats>('/dashboard')
+      .then((d) => active && setStats(d))
+      .catch((err: Error) => active && setError(err.message))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
   }, [authFetch]);
 
   if (loading) {
@@ -58,6 +72,22 @@ export default function DashboardPage() {
         <AppNav />
         <div className="flex flex-1 items-center justify-center p-20 text-slate-400">
           Loading dashboard...
+        </div>
+      </>
+    );
+  }
+
+  if (error || !stats) {
+    return (
+      <>
+        <AppNav />
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-20 text-center">
+          <p className="text-slate-300">
+            {error ?? 'We could not load your dashboard.'}
+          </p>
+          <Button variant="secondary" onClick={load}>
+            Try again
+          </Button>
         </div>
       </>
     );

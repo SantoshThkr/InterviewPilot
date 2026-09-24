@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { CodingService } from './coding.service';
 import { CODING_PROBLEMS } from './coding.problems';
 import { AuthGuard } from '../auth/auth.guard';
+import { RunCodeDto } from './dto/coding.dto';
 
 @Controller('coding')
 @UseGuards(AuthGuard)
@@ -10,9 +11,16 @@ export class CodingController {
 
   @Get('problems')
   listProblems() {
-    return CODING_PROBLEMS.map(({ testCases, starterCode, ...p }) => ({
-      ...p,
-      languages: Object.keys(starterCode),
+    // Never expose testCases (hidden tests) or starterCode bodies in the list view.
+    return CODING_PROBLEMS.map((p) => ({
+      id: p.id,
+      title: p.title,
+      difficulty: p.difficulty,
+      description: p.description,
+      examples: p.examples,
+      constraints: p.constraints,
+      functionName: p.functionName,
+      languages: Object.keys(p.starterCode),
     }));
   }
 
@@ -22,11 +30,7 @@ export class CodingController {
   }
 
   @Post('run')
-  runCode(@Body() body: { problemId: string; code: string; language: string }) {
-    return this.codingService.runTests(
-      body.problemId,
-      body.code,
-      body.language,
-    );
+  runCode(@Body() dto: RunCodeDto) {
+    return this.codingService.runTests(dto.problemId, dto.code, dto.language);
   }
 }

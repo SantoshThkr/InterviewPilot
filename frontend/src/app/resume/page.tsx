@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Upload, FileText } from 'lucide-react';
-import { useAuth, useUser } from '@clerk/nextjs';
+import { useAuth } from '@clerk/nextjs';
 import { AppNav } from '@/components/layout/app-nav';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useApiAuth } from '@/hooks/use-api-auth';
@@ -22,12 +22,14 @@ interface Resume {
 export default function ResumePage() {
   const { authFetch } = useApiAuth();
   const { getToken } = useAuth();
-  const { user } = useUser();
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadResumes = useCallback(() => {
-    authFetch<Resume[]>('/resume').then(setResumes).catch(console.error);
+    authFetch<Resume[]>('/resume')
+      .then(setResumes)
+      .catch((err: Error) => setError(err.message));
   }, [authFetch]);
 
   useEffect(() => {
@@ -39,6 +41,7 @@ export default function ResumePage() {
     if (!file) return;
 
     setUploading(true);
+    setError(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -48,20 +51,20 @@ export default function ResumePage() {
       const res = await fetch(`${API_URL}/api/resume/upload`, {
         method: 'POST',
         body: formData,
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          'x-clerk-user-id': user?.id ?? '',
-          'x-clerk-user-email': user?.primaryEmailAddress?.emailAddress ?? '',
-        },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
 
-      if (!res.ok) throw new Error('Upload failed');
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(body?.message ?? 'Upload failed. Please try again.');
+      }
       loadResumes();
     } catch (err) {
-      console.error(err);
-      alert('Upload failed');
+      setError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
     } finally {
       setUploading(false);
+      // Allow re-uploading the same file.
+      e.target.value = '';
     }
   };
 
@@ -75,6 +78,15 @@ export default function ResumePage() {
         <p className="mb-8 text-slate-400">
           Upload your resume for personalized, resume-based interview questions.
         </p>
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-6 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+          >
+            {error}
+          </div>
+        )}
 
         <Card className="mb-6">
           <CardHeader>

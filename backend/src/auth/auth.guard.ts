@@ -2,21 +2,25 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { createClerkClient, verifyToken } from '@clerk/backend';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import type { AuthenticatedRequest } from '../common/authenticated-request';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly logger = new Logger('AuthGuard');
+
   constructor(
     private config: ConfigService,
     private prisma: PrismaService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const authHeader = request.headers.authorization;
 
     if (!authHeader?.startsWith('Bearer ')) {
@@ -30,51 +34,78 @@ export class AuthGuard implements CanActivate {
 
     const secretKey = this.config.get<string>('CLERK_SECRET_KEY');
     if (!secretKey) {
-      throw new UnauthorizedException('Clerk secret key is not configured');
+      // Misconfiguration, not a client error.
+      this.logger.error('CLERK_SECRET_KEY is not configured');
+      throw new UnauthorizedException('Authentication is not available');
     }
 
-    const frontendOrigin = this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
+    const frontendOrigin =
+      this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
     const authorizedParties = Array.from(
       new Set([frontendOrigin, 'http://localhost:3000']),
     );
 
+    let clerkId: string;
     try {
-  const verifiedToken = await verifyToken(token, {
-    secretKey,
-    authorizedParties,
-  });
+      const verifiedToken = await verifyToken(token, {
+        secretKey,
+        authorizedParties,
+      });
+      if (!verifiedToken?.sub) {
+        throw new UnauthorizedException('Authentication failed');
+      }
+      clerkId = verifiedToken.sub;
+    } catch (error) {
+      // Log the real reason; return a generic message to the client.
+      this.logger.warn(
+        `Token verification failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+      throw new UnauthorizedException('Authentication failed');
+    }
 
-  if (!verifiedToken?.sub) {
-    throw new UnauthorizedException('Authentication failed');
+    request.user = await this.ensureUser(clerkId, secretKey);
+    return true;
   }
 
-  const clerkId = verifiedToken.sub;
+  /**
+   * The verified token only carries the Clerk user id (`sub`). We upsert on it
+   * and only reach out to the Clerk API for profile details (email/name) when
+   * the local user does not exist yet — avoiding a Clerk round-trip on every
+   * request.
+   */
+  private async ensureUser(clerkId: string, secretKey: string) {
+    const existing = await this.prisma.user.findUnique({ where: { clerkId } });
+    if (existing) {
+      return this.prisma.user.update({
+        where: { clerkId },
+        data: { lastActiveAt: new Date() },
+      });
+    }
 
-  const clerkClient = createClerkClient({ secretKey });
-  const clerkUser = await clerkClient.users.getUser(clerkId);
+    const clerkClient = createClerkClient({ secretKey });
+    const clerkUser = await clerkClient.users.getUser(clerkId);
+    const email =
+      clerkUser.emailAddresses?.find(
+        (e) => e.id === clerkUser.primaryEmailAddressId,
+      )?.emailAddress ??
+      clerkUser.emailAddresses?.[0]?.emailAddress ??
+      `${clerkId}@users.noreply.clerk.dev`;
 
-  const email =
-    clerkUser.emailAddresses?.[0]?.emailAddress ??
-    `${clerkId}@clerk.dev`;
-
-  request.user = await this.ensureUser(
-    clerkId,
-    email,
-    clerkUser.firstName ?? undefined,
-  );
-
-  return true;
-} catch (error) {
-  console.error('Clerk authentication error:', error);
-  throw new UnauthorizedException('Authentication failed');
-}
-  }
-
-  private async ensureUser(clerkId: string, email: string, name?: string) {
     return this.prisma.user.upsert({
       where: { clerkId },
-      update: { email, name, lastActiveAt: new Date() },
-      create: { clerkId, email, name, lastActiveAt: new Date() },
+      update: {
+        email,
+        name: clerkUser.firstName ?? undefined,
+        lastActiveAt: new Date(),
+      },
+      create: {
+        clerkId,
+        email,
+        name: clerkUser.firstName ?? undefined,
+        lastActiveAt: new Date(),
+      },
     });
   }
 }

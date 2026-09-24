@@ -53,6 +53,7 @@ function CodingPageContent() {
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [hintsUsed, setHintsUsed] = useState(0);
+  const [runError, setRunError] = useState<string | null>(null);
 
   useEffect(() => {
     authFetch<{ id: string; title: string; difficulty: string }[]>('/coding/problems')
@@ -77,6 +78,7 @@ function CodingPageContent() {
 
   const runCode = async () => {
     setRunning(true);
+    setRunError(null);
     try {
       const res = await authFetch<{ results: TestResult[] }>('/coding/run', {
         method: 'POST',
@@ -97,7 +99,7 @@ function CodingPageContent() {
         });
       }
     } catch (err) {
-      console.error(err);
+      setRunError(err instanceof Error ? err.message : 'Failed to run your code.');
     } finally {
       setRunning(false);
     }
@@ -227,6 +229,15 @@ function CodingPageContent() {
                 options={{ minimap: { enabled: false }, fontSize: 14 }}
               />
             </div>
+
+            {runError && (
+              <div
+                role="alert"
+                className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+              >
+                {runError}
+              </div>
+            )}
 
             {results.length > 0 && (
               <Card>

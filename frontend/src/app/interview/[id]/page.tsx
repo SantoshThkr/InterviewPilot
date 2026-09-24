@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Mic, MicOff, Send, Square, Code2, AlertTriangle } from 'lucide-react';
-import { useAuth, useUser } from '@clerk/nextjs';
+import { useAuth } from '@clerk/nextjs';
 import { AppNav } from '@/components/layout/app-nav';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -34,23 +34,38 @@ export default function LiveInterviewPage() {
   const router = useRouter();
   const { authFetch } = useApiAuth();
   const { getToken } = useAuth();
-  const { user } = useUser();
 
   const [interview, setInterview] = useState<Interview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState('');
+  const [sendError, setSendError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [ending, setEnding] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
   useEffect(() => {
-    authFetch<Interview>(`/interviews/${id}`).then(setInterview).catch(console.error);
-  }, [authFetch, id]);
+    let active = true;
+    authFetch<Interview>(`/interviews/${id}`)
+      .then((data) => {
+        if (!active) return;
+        if (data.status === 'COMPLETED') {
+          router.replace(`/interview/${id}/report`);
+          return;
+        }
+        setInterview(data);
+      })
+      .catch((err: Error) => active && setLoadError(err.message));
+    return () => {
+      active = false;
+    };
+  }, [authFetch, id, router]);
 
   useEffect(() => {
     const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -130,9 +145,11 @@ export default function LiveInterviewPage() {
 
     const content = input.trim();
     setInput('');
+    setSendError(null);
     setStreaming(true);
     setStreamBuffer('');
 
+    const tempId = `temp-${Date.now()}`;
     setInterview((prev) =>
       prev
         ? {
@@ -140,7 +157,7 @@ export default function LiveInterviewPage() {
             messages: [
               ...prev.messages,
               {
-                id: `temp-${Date.now()}`,
+                id: tempId,
                 role: 'CANDIDATE',
                 content,
                 createdAt: new Date().toISOString(),
@@ -161,11 +178,7 @@ export default function LiveInterviewPage() {
           accumulated += chunk;
           setStreamBuffer(accumulated);
         },
-        {
-          token: token ?? undefined,
-          userId: user?.id,
-          email: user?.primaryEmailAddress?.emailAddress,
-        },
+        { token: token ?? undefined },
       );
 
       speak(accumulated);
@@ -173,7 +186,18 @@ export default function LiveInterviewPage() {
       setInterview(updated);
       setStreamBuffer('');
     } catch (err) {
-      console.error(err);
+      // The server persisted nothing on failure — roll back the optimistic
+      // message, restore the input, and let the candidate retry.
+      setInterview((prev) =>
+        prev
+          ? { ...prev, messages: prev.messages.filter((m) => m.id !== tempId) }
+          : prev,
+      );
+      setInput(content);
+      setStreamBuffer('');
+      setSendError(
+        err instanceof Error ? err.message : 'Failed to send. Please try again.',
+      );
     } finally {
       setStreaming(false);
     }
@@ -181,13 +205,31 @@ export default function LiveInterviewPage() {
 
   const endInterview = async () => {
     if (!confirm('End interview and generate report?')) return;
+    setEnding(true);
     try {
       await authFetch(`/interviews/${id}/complete`, { method: 'POST' });
       router.push(`/interview/${id}/report`);
     } catch (err) {
-      console.error(err);
+      setEnding(false);
+      setSendError(
+        err instanceof Error ? err.message : 'Could not generate the report.',
+      );
     }
   };
+
+  if (loadError) {
+    return (
+      <>
+        <AppNav />
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-20 text-center">
+          <p className="text-slate-300">{loadError}</p>
+          <Button variant="secondary" onClick={() => router.push('/dashboard')}>
+            Back to dashboard
+          </Button>
+        </div>
+      </>
+    );
+  }
 
   if (!interview) {
     return (
@@ -222,11 +264,30 @@ export default function LiveInterviewPage() {
             <Button variant="secondary" size="sm" onClick={() => router.push(`/coding?interview=${id}`)}>
               <Code2 className="mr-1 h-4 w-4" /> Coding
             </Button>
-            <Button variant="destructive" size="sm" onClick={endInterview}>
-              <Square className="mr-1 h-4 w-4" /> End
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={endInterview}
+              disabled={ending}
+            >
+              <Square className="mr-1 h-4 w-4" /> {ending ? 'Ending…' : 'End'}
             </Button>
           </div>
         </div>
+
+        {sendError && (
+          <div
+            role="alert"
+            className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+          >
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4" /> {sendError}
+            </span>
+            <Button size="sm" variant="secondary" onClick={sendMessage} disabled={streaming}>
+              Retry
+            </Button>
+          </div>
+        )}
 
         {warnings.length > 0 && (
           <div className="mb-4 rounded-lg border border-amber-800 bg-amber-950/30 p-3">
@@ -266,6 +327,19 @@ export default function LiveInterviewPage() {
                   <p className="mb-1 text-xs font-medium text-indigo-300">Interviewer</p>
                   {streamBuffer}
                   <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-indigo-400" />
+                </div>
+              </div>
+            )}
+
+            {streaming && !streamBuffer && (
+              <div className="mb-4 flex justify-start" aria-live="polite">
+                <div className="flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-3 text-sm text-slate-400">
+                  <span className="text-xs font-medium text-indigo-300">Interviewer</span>
+                  <span className="flex gap-1">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500" />
+                  </span>
                 </div>
               </div>
             )}

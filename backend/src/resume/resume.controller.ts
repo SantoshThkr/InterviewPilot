@@ -35,7 +35,12 @@ export class ResumeController {
           /\.(pdf|doc|docx|txt)$/i.test(file.originalname);
 
         if (!isAllowed) {
-          callback(new BadRequestException('Unsupported file type. Upload PDF, DOC, DOCX, or TXT only.'), false);
+          callback(
+            new BadRequestException(
+              'Unsupported file type. Upload PDF, DOC, DOCX, or TXT only.',
+            ),
+            false,
+          );
           return;
         }
 

@@ -86,17 +86,41 @@ App runs at `http://localhost:3000`
 
 ## API Endpoints
 
+All endpoints except `/api/health` require a Clerk `Authorization: Bearer <token>` header. The authenticated identity is derived from the verified token — client-supplied user headers are never trusted. Every query is scoped to the authenticated user.
+
 | Method | Path | Description |
 |--------|------|-------------|
+| GET | `/api/health` | Liveness + database check (public) |
 | GET | `/api/interviews/config` | Interview configuration options |
 | POST | `/api/interviews` | Start new interview |
-| GET | `/api/interviews/:id` | Get interview with messages |
+| GET | `/api/interviews` | List the user's interviews |
+| GET | `/api/interviews/:id` | Get interview with messages, report, submissions |
 | POST | `/api/interviews/:id/message` | Send answer (SSE stream) |
-| POST | `/api/interviews/:id/complete` | End interview & generate report |
-| POST | `/api/resume/upload` | Upload resume (PDF/DOCX/TXT) |
+| POST | `/api/interviews/:id/complete` | End interview & generate report (idempotent) |
+| POST | `/api/interviews/:id/events` | Record a proctoring event |
+| POST | `/api/interviews/:id/coding` | Submit a coding attempt |
+| POST | `/api/resume/upload` | Upload resume (PDF/DOCX/TXT, ≤5MB) |
+| GET | `/api/resume` | List uploaded resumes |
+| GET | `/api/resume/active` | Get the active resume |
 | GET | `/api/dashboard` | Dashboard stats |
 | GET | `/api/coding/problems` | List coding problems |
+| GET | `/api/coding/problems/:id` | Get one problem (hidden tests stripped) |
 | POST | `/api/coding/run` | Run code against test cases |
+
+## Security notes
+
+- **Code execution**: candidate JavaScript/TypeScript runs in a dedicated worker thread inside a `vm` context created with code generation disabled and no host objects in scope. The worker has hard memory limits and is force-terminated on timeout, so untrusted code cannot reach the host process, `require`, or the network, and cannot hang the API. Python/Java/C++ are accepted by the editor but not executed server-side (a Piston/Judge0 integration is the intended path).
+- **Auth**: identity comes from the verified Clerk token (`sub`); the backend upserts a local user and only calls the Clerk API when a user is first seen.
+- **Errors**: a global exception filter returns consistent JSON and never leaks stack traces, Prisma internals, or provider errors.
+- **AI resilience**: OpenAI calls have a timeout and bounded retries; streaming failures send an error frame and persist nothing, so a failed turn can be retried cleanly.
+
+## Testing
+
+```bash
+cd backend
+npm test        # unit tests (sandbox isolation, streak, report normalization)
+npm run test:e2e   # health endpoint (mocked Prisma)
+```
 
 ## Deployment
 
@@ -104,9 +128,17 @@ App runs at `http://localhost:3000`
 - **Backend**: Deploy to [Railway](https://railway.app) or [Render](https://render.com)
 - **Database**: Use Railway PostgreSQL, Supabase, or Neon
 
+## Production considerations
+
+- Add API rate limiting (e.g. `@nestjs/throttler`) before public exposure, especially on the AI and code-run endpoints.
+- Pin `FRONTEND_URL` in production so CORS is not permissive.
+- Add pagination to interview history once volume grows.
+- Run `prisma migrate deploy` against the production database (the local dev setup uses `prisma db push`).
+
 ## Project Roadmap
 
 - [ ] Piston/Judge0 integration for Python/Java/C++ execution
+- [ ] Rate limiting on AI + code-execution endpoints
 - [ ] Fullscreen exam mode
 - [ ] WebRTC video simulation
 - [ ] Company-specific question banks

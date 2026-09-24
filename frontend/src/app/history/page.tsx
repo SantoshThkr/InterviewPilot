@@ -20,9 +20,14 @@ interface Interview {
 export default function HistoryPage() {
   const { authFetch } = useApiAuth();
   const [interviews, setInterviews] = useState<Interview[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    authFetch<Interview[]>('/interviews').then(setInterviews).catch(console.error);
+    authFetch<Interview[]>('/interviews')
+      .then(setInterviews)
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
   }, [authFetch]);
 
   return (
@@ -31,8 +36,16 @@ export default function HistoryPage() {
       <main className="mx-auto max-w-4xl flex-1 px-4 py-8">
         <h1 className="mb-8 text-2xl font-bold">Interview History</h1>
 
+        {loading && <p className="text-sm text-slate-400">Loading history…</p>}
+
+        {error && !loading && (
+          <Card>
+            <CardContent className="p-8 text-center text-red-300">{error}</CardContent>
+          </Card>
+        )}
+
         <div className="space-y-3">
-          {interviews.map((i) => (
+          {!loading && !error && interviews.map((i) => (
             <Link key={i.id} href={i.report ? `/interview/${i.id}/report` : `/interview/${i.id}`}>
               <Card className="transition-colors hover:border-indigo-800">
                 <CardContent className="flex items-center justify-between p-4">
@@ -59,7 +72,7 @@ export default function HistoryPage() {
               </Card>
             </Link>
           ))}
-          {interviews.length === 0 && (
+          {!loading && !error && interviews.length === 0 && (
             <Card>
               <CardContent className="p-8 text-center text-slate-500">
                 No interviews yet. Start your first mock interview!

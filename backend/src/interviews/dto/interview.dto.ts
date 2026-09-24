@@ -1,9 +1,15 @@
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
 } from 'class-validator';
 import {
   DIFFICULTY_LEVELS,
@@ -11,7 +17,6 @@ import {
   INTERVIEW_TYPES,
   PERSONALITIES,
   ROLES,
-  TECHNICAL_TOPICS,
 } from '../../ai/interview.constants';
 
 export class CreateInterviewDto {
@@ -36,6 +41,7 @@ export class CreateInterviewDto {
   personality: string;
 
   @IsArray()
+  @ArrayNotEmpty()
   @IsString({ each: true })
   topics: string[];
 
@@ -58,6 +64,8 @@ export class CreateInterviewDto {
 
 export class SendMessageDto {
   @IsString()
+  @MinLength(1)
+  @MaxLength(10_000)
   content: string;
 }
 
@@ -75,14 +83,22 @@ export class SubmitCodingDto {
   problemId: string;
 
   @IsString()
+  @MinLength(1)
+  @MaxLength(20_000)
   code: string;
 
   @IsString()
   language: string;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(86_400)
   timeSpentSecs?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
   hintsUsed?: number;
 }

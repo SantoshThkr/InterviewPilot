@@ -2,7 +2,7 @@
 
 import { useAuth, useUser } from '@clerk/nextjs';
 import { useCallback } from 'react';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 
 export function useApiAuth() {
   const { getToken } = useAuth();
@@ -11,20 +11,12 @@ export function useApiAuth() {
   const authFetch = useCallback(
     async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
       const token = await getToken();
-
-console.log('Clerk token exists:', Boolean(token));
-
-if (!token) {
-  throw new Error('No Clerk session token available');
-}
-      return apiFetch<T>(path, {
-        ...options,
-        token: token ?? undefined,
-        userId: user?.id,
-        email: user?.primaryEmailAddress?.emailAddress,
-      });
+      if (!token) {
+        throw new ApiError('Your session has expired. Please sign in again.', 401);
+      }
+      return apiFetch<T>(path, { ...options, token });
     },
-    [getToken, user],
+    [getToken],
   );
 
   return { authFetch, user };
