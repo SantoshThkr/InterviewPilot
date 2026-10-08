@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { PDFParse } from 'pdf-parse';
@@ -10,13 +10,28 @@ const MAX_CONTENT_CHARS = 50_000;
 
 @Injectable()
 export class ResumeService {
+  private readonly logger = new Logger('ResumeService');
+
   constructor(
     private prisma: PrismaService,
     private ai: AiService,
   ) {}
 
   async upload(user: User, file: Express.Multer.File) {
-    const content = (await this.extractText(file)).slice(0, MAX_CONTENT_CHARS);
+    let text: string;
+    try {
+      text = await this.extractText(file);
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      // Corrupt or password-protected files are a client problem, not a 500.
+      this.logger.warn(
+        `Resume extraction failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+      throw new BadRequestException(
+        'We could not read that file. Please upload a text-based PDF, DOCX, or TXT.',
+      );
+    }
+    const content = text.slice(0, MAX_CONTENT_CHARS);
     if (!content.trim()) {
       throw new BadRequestException(
         'Could not read any text from that file. Please upload a text-based PDF, DOCX, or TXT.',
@@ -101,8 +116,7 @@ export class ResumeService {
     if (
       isZip ||
       mime ===
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      mime === 'application/msword'
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     ) {
       const result = await mammoth.extractRawText({ buffer });
       return result.value;

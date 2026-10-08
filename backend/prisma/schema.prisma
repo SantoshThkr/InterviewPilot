@@ -99,11 +99,13 @@ model InterviewMessage {
 model InterviewReport {
   id                  String    @id @default(cuid())
   interviewId         String    @unique
+  /// Weighted mean of the dimension scores (computed server-side, not by the model).
   overallScore        Float
-  communicationScore  Float
-  technicalScore      Float
-  confidenceScore     Float
-  problemSolvingScore Float
+  /// Dimension scores are null when the dimension was not assessed in this interview type.
+  communicationScore  Float?
+  technicalScore      Float?
+  confidenceScore     Float?
+  problemSolvingScore Float?
   codingScore         Float?
   systemDesignScore   Float?
   behavioralScore     Float?
@@ -113,6 +115,10 @@ model InterviewReport {
   topicsToRevise      String[]
   mistakes            String[]
   learningRoadmap     Json?
+  /// Per-dimension rating, weight, rationale and evidence.
+  dimensions          Json?
+  /// Per-question rating, strengths, gaps and a stronger-answer outline.
+  questionFeedback    Json?
   readinessPercent    Float
   summary             String    @db.Text
   createdAt           DateTime  @default(now())

@@ -4,27 +4,26 @@ import {
   Get,
   Post,
   UploadedFile,
-  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import type { User } from '@prisma/client';
-import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { ResumeService } from './resume.service';
 
+// Legacy binary .doc is not supported: the DOCX parser cannot read it.
 const allowedMimeTypes = new Set([
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
   'text/plain',
 ]);
 
 @Controller('resume')
-@UseGuards(AuthGuard)
 export class ResumeController {
   constructor(private resumeService: ResumeService) {}
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('upload')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -32,12 +31,12 @@ export class ResumeController {
       fileFilter: (_req, file, callback) => {
         const isAllowed =
           allowedMimeTypes.has(file.mimetype) ||
-          /\.(pdf|doc|docx|txt)$/i.test(file.originalname);
+          /\.(pdf|docx|txt)$/i.test(file.originalname);
 
         if (!isAllowed) {
           callback(
             new BadRequestException(
-              'Unsupported file type. Upload PDF, DOC, DOCX, or TXT only.',
+              'Unsupported file type. Upload a PDF, DOCX, or TXT file.',
             ),
             false,
           );

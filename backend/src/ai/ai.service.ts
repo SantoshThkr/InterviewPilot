@@ -1,242 +1,188 @@
 import {
+  Inject,
   Injectable,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
-import { Response } from 'express';
 import {
-  buildReportPrompt,
-  buildSystemPrompt,
+  CHAT_PROVIDER,
+  ChatProviderError,
+  type ChatMessage,
+  type ChatProvider,
+} from './chat-provider';
+import {
+  RESUME_ANALYSIS_PROMPT,
+  buildEvaluationPrompt,
+  buildOpeningPrompt,
+  buildTurnSystemPrompt,
+  type EvaluationPromptInput,
+} from './prompts';
+import { ResumeAnalysis, normalizeResume } from './ai.normalize';
+import type {
   InterviewConfig,
-} from './interview.constants';
+  InterviewPlan,
+  TurnAction,
+  TurnState,
+} from '../interviews/interview-plan';
 import {
-  InterviewReportPayload,
-  ResumeAnalysis,
-  normalizeReport,
-  normalizeResume,
-} from './ai.normalize';
+  parseEvaluation,
+  type EvaluationContext,
+  type ValidatedEvaluation,
+} from '../interviews/evaluation';
 
-export type { InterviewReportPayload } from './ai.normalize';
+const EVALUATION_ATTEMPTS = 2;
+const EVALUATION_TIMEOUT_MS = 90_000;
+const RESUME_INPUT_CHARS = 10_000;
 
-const MODEL = 'gpt-4o-mini';
-const REQUEST_TIMEOUT_MS = 30_000;
+export interface TurnRequest {
+  config: InterviewConfig;
+  plan: InterviewPlan;
+  state: TurnState;
+  allowed: TurnAction[];
+  history: ChatMessage[];
+  resumeContent?: string;
+}
 
 @Injectable()
 export class AiService {
   private readonly logger = new Logger('AiService');
-  private openai: OpenAI;
 
-  constructor(private config: ConfigService) {
-    const apiKey = this.config.get<string>('OPENAI_API_KEY');
-    if (!apiKey) {
-      throw new Error(
-        'OPENAI_API_KEY is not configured. Set it in backend/.env',
-      );
-    }
-    this.openai = new OpenAI({
-      apiKey,
-      timeout: REQUEST_TIMEOUT_MS,
-      maxRetries: 2,
-    });
-  }
+  constructor(@Inject(CHAT_PROVIDER) private readonly provider: ChatProvider) {}
 
+  /**
+   * First interviewer message. Falls back to the plan's deterministic
+   * question if the model is unavailable, so a brief outage does not block
+   * starting an interview.
+   */
   async generateOpening(
     config: InterviewConfig,
+    plan: InterviewPlan,
     resumeContent?: string,
   ): Promise<string> {
-    const systemPrompt = buildSystemPrompt(config, resumeContent);
+    const prompt = buildOpeningPrompt(config, plan, resumeContent);
     try {
-      const completion = await this.openai.chat.completions.create({
-        model: MODEL,
+      const text = await this.provider.complete({
         messages: [
-          { role: 'system', content: systemPrompt },
-          {
-            role: 'user',
-            content:
-              'Begin the interview. Introduce yourself briefly as the interviewer and start with an appropriate opening question.',
-          },
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
         ],
-        temperature: 0.8,
-        max_tokens: 400,
+        temperature: 0.7,
+        maxTokens: 250,
       });
-      return (
-        completion.choices[0]?.message?.content ??
-        'Hello, thanks for joining today. To start, tell me about yourself and your recent work.'
+      if (text.trim()) return text.trim();
+      this.logger.warn(
+        'generateOpening returned empty content; using fallback',
       );
     } catch (error) {
-      throw this.toHttpError(error, 'generateOpening');
+      this.logFailure('generateOpening', error);
+    }
+    return `Hi, I'll be your interviewer today for this ${config.role} interview. ${plan.items[0].fallbackQuestion}`;
+  }
+
+  /** Streams the raw interviewer reply (including its leading control tag). */
+  async *streamTurn(request: TurnRequest): AsyncIterable<string> {
+    const system = buildTurnSystemPrompt(
+      request.config,
+      request.plan,
+      request.state,
+      request.allowed,
+      request.resumeContent,
+    );
+    try {
+      yield* this.provider.stream({
+        messages: [{ role: 'system', content: system }, ...request.history],
+        temperature: 0.7,
+        maxTokens: 400,
+      });
+    } catch (error) {
+      this.logFailure('streamTurn', error);
+      throw this.toHttpError(error);
     }
   }
 
   /**
-   * Streams the interviewer reply as SSE. Returns the full text on success, or
-   * `null` if generation failed (an `error` frame is sent to the client and the
-   * stream is closed). The caller must not persist a reply when this returns
-   * `null`.
+   * Grades a finished interview. Invalid output is retried once; if it is
+   * still unusable the call fails so the interview stays open and the
+   * candidate can retry, instead of persisting a fabricated report.
    */
-  async streamResponse(
-    config: InterviewConfig,
-    messages: { role: 'user' | 'assistant'; content: string }[],
-    resumeContent: string | undefined,
-    res: Response,
-  ): Promise<string | null> {
-    const systemPrompt = buildSystemPrompt(config, resumeContent);
+  async evaluateInterview(
+    input: EvaluationPromptInput,
+    context: EvaluationContext,
+  ): Promise<ValidatedEvaluation> {
+    const prompt = buildEvaluationPrompt(input);
+    let lastError: unknown = null;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-
-    let fullContent = '';
-    try {
-      const stream = await this.openai.chat.completions.create({
-        model: MODEL,
-        messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        temperature: 0.75,
-        max_tokens: 500,
-        stream: true,
-      });
-
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content;
-        if (content) {
-          fullContent += content;
-          res.write(`data: ${JSON.stringify({ content })}\n\n`);
-        }
+    for (let attempt = 1; attempt <= EVALUATION_ATTEMPTS; attempt++) {
+      try {
+        const raw = await this.provider.complete({
+          messages: [
+            { role: 'system', content: prompt.system },
+            { role: 'user', content: prompt.user },
+          ],
+          temperature: 0.2,
+          maxTokens: 3000,
+          json: true,
+          timeoutMs: EVALUATION_TIMEOUT_MS,
+        });
+        const evaluation = parseEvaluation(raw, context);
+        if (evaluation) return evaluation;
+        this.logger.warn(
+          `evaluateInterview attempt ${attempt} returned unusable output`,
+        );
+      } catch (error) {
+        lastError = error;
+        this.logFailure(`evaluateInterview attempt ${attempt}`, error);
       }
-
-      res.write('data: [DONE]\n\n');
-      res.end();
-      return fullContent || 'Could you elaborate on that?';
-    } catch (error) {
-      this.logger.error(
-        `streamResponse failed: ${error instanceof Error ? error.message : 'unknown'}`,
-      );
-      // If we already streamed some text, keep it; otherwise signal a clean failure.
-      if (fullContent) {
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return fullContent;
-      }
-      res.write(
-        `data: ${JSON.stringify({
-          error:
-            'The interviewer is temporarily unavailable. Please try again.',
-        })}\n\n`,
-      );
-      res.end();
-      return null;
     }
-  }
 
-  async generateReport(
-    config: InterviewConfig,
-    messages: { role: string; content: string }[],
-  ): Promise<InterviewReportPayload> {
-    const prompt = buildReportPrompt(messages, config);
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        response_format: { type: 'json_object' },
-      });
-      return normalizeReport(completion.choices[0]?.message?.content ?? '{}');
-    } catch (error) {
-      throw this.toHttpError(error, 'generateReport');
-    }
+    throw lastError
+      ? this.toHttpError(lastError)
+      : new ServiceUnavailableException(
+          'The report could not be generated right now. Your interview is saved — please try again.',
+        );
   }
 
   async analyzeResume(content: string): Promise<ResumeAnalysis> {
     try {
-      const completion = await this.openai.chat.completions.create({
-        model: MODEL,
+      const raw = await this.provider.complete({
         messages: [
+          { role: 'system', content: RESUME_ANALYSIS_PROMPT },
           {
-            role: 'system',
-            content: `Analyze this resume and extract structured data. Respond with JSON:
-{
-  "companies": ["..."],
-  "projects": [{"name": "...", "description": "...", "technologies": ["..."]}],
-  "technologies": ["..."],
-  "experienceYears": number,
-  "achievements": ["..."],
-  "careerGaps": ["..."],
-  "suggestedQuestionTopics": ["..."]
-}`,
+            role: 'user',
+            content: `<resume>\n${content.slice(0, RESUME_INPUT_CHARS)}\n</resume>`,
           },
-          { role: 'user', content: content.slice(0, 10000) },
         ],
         temperature: 0.2,
-        response_format: { type: 'json_object' },
+        maxTokens: 1200,
+        json: true,
       });
-      return normalizeResume(completion.choices[0]?.message?.content ?? '{}');
+      return normalizeResume(raw);
     } catch (error) {
-      // Resume analysis is best-effort — degrade to an empty analysis instead of
-      // failing the whole upload.
-      this.logger.warn(
-        `analyzeResume failed: ${error instanceof Error ? error.message : 'unknown'}`,
-      );
+      // Resume analysis is best-effort — degrade to an empty analysis instead
+      // of failing the whole upload.
+      this.logFailure('analyzeResume', error);
       return normalizeResume('{}');
     }
   }
 
-  async generateCodingHint(
-    problem: string,
-    code: string,
-    attempt: number,
-  ): Promise<string> {
-    const hintLevel =
-      attempt === 1
-        ? 'Give a very subtle nudge — point toward the right direction without revealing the solution.'
-        : attempt === 2
-          ? 'Give a moderate hint about the approach or data structure to consider.'
-          : 'Give a stronger hint about the algorithm but still let them implement it.';
-
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `You are an interview proctor. ${hintLevel} Never write the full solution.`,
-          },
-          {
-            role: 'user',
-            content: `Problem: ${problem}\n\nCandidate's current code:\n${code}\n\nProvide a hint.`,
-          },
-        ],
-        temperature: 0.5,
-        max_tokens: 200,
-      });
-      return (
-        completion.choices[0]?.message?.content ??
-        'Think about which data structure gives you fast lookups here.'
-      );
-    } catch (error) {
-      throw this.toHttpError(error, 'generateCodingHint');
-    }
-  }
-
-  private toHttpError(
-    error: unknown,
-    where: string,
-  ): ServiceUnavailableException {
-    const status: number | undefined =
-      error instanceof OpenAI.APIError
-        ? (error.status as number | undefined)
-        : undefined;
+  private logFailure(where: string, error: unknown) {
+    const status =
+      error instanceof ChatProviderError ? error.status : undefined;
     this.logger.error(
       `${where} failed${status ? ` (status ${status})` : ''}: ${
         error instanceof Error ? error.message : 'unknown error'
       }`,
     );
-    const message =
+  }
+
+  private toHttpError(error: unknown): ServiceUnavailableException {
+    if (error instanceof ServiceUnavailableException) return error;
+    const status =
+      error instanceof ChatProviderError ? error.status : undefined;
+    return new ServiceUnavailableException(
       status === 429
         ? 'The AI service is busy right now. Please try again in a moment.'
-        : 'The AI service is temporarily unavailable. Please try again.';
-    return new ServiceUnavailableException(message);
+        : 'The AI service is temporarily unavailable. Please try again.',
+    );
   }
 }

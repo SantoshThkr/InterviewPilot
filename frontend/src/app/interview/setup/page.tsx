@@ -19,14 +19,26 @@ interface InterviewConfig {
   experienceLevels: string[];
   interviewTypes: string[];
   technicalTopics: string[];
+  topicDrivenTypes: string[];
   difficultyLevels: string[];
   personalities: string[];
+  questionCounts: Record<string, number>;
 }
+
+const TYPE_LABELS: Record<string, string> = {
+  TECHNICAL: 'Technical',
+  HR: 'HR screen',
+  BEHAVIORAL: 'Behavioral',
+  MANAGERIAL: 'Engineering management',
+  MIXED: 'Full loop (mixed)',
+};
 
 export default function InterviewSetupPage() {
   const router = useRouter();
   const { authFetch } = useApiAuth();
   const [config, setConfig] = useState<InterviewConfig | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [configAttempt, setConfigAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,8 +53,21 @@ export default function InterviewSetupPage() {
   const [examMode, setExamMode] = useState(false);
 
   useEffect(() => {
-    authFetch<InterviewConfig>('/interviews/config').then(setConfig).catch(console.error);
-  }, [authFetch]);
+    let active = true;
+    authFetch<InterviewConfig>('/interviews/config')
+      .then((c) => {
+        if (!active) return;
+        setConfig(c);
+        setConfigError(null);
+      })
+      .catch((err: Error) => active && setConfigError(err.message));
+    return () => {
+      active = false;
+    };
+  }, [authFetch, configAttempt]);
+
+  const usesTopics = config?.topicDrivenTypes.includes(type) ?? true;
+  const questionCount = config?.questionCounts[type];
 
   const toggleTopic = (topic: string) => {
     setTopics((prev) =>
@@ -62,8 +87,8 @@ export default function InterviewSetupPage() {
           type,
           difficulty,
           personality,
-          topics,
-          includeCoding,
+          topics: usesTopics ? topics : [],
+          includeCoding: usesTopics && includeCoding,
           includeResume,
           examMode,
         }),
@@ -87,6 +112,18 @@ export default function InterviewSetupPage() {
         <p className="mb-8 text-slate-400">
           Customize your mock interview to match your target role and company style.
         </p>
+
+        {configError && (
+          <div
+            role="alert"
+            className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+          >
+            <span>Could not load interview options: {configError}</span>
+            <Button size="sm" variant="secondary" onClick={() => setConfigAttempt((n) => n + 1)}>
+              Retry
+            </Button>
+          </div>
+        )}
 
         <div className="space-y-6">
           <Card>
@@ -130,7 +167,7 @@ export default function InterviewSetupPage() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {(config?.interviewTypes ?? []).map((t) => (
-                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                      <SelectItem key={t} value={t}>{TYPE_LABELS[t] ?? t}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -160,10 +197,14 @@ export default function InterviewSetupPage() {
             </CardContent>
           </Card>
 
+          {usesTopics && (
           <Card>
             <CardHeader>
               <CardTitle>Technical Topics</CardTitle>
-              <CardDescription>Select areas to focus on</CardDescription>
+              <CardDescription>
+                Questions rotate through the topics you pick. Areas you struggled with before are
+                added automatically.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-2">
@@ -171,6 +212,7 @@ export default function InterviewSetupPage() {
                   <button
                     key={topic}
                     type="button"
+                    aria-pressed={topics.includes(topic)}
                     onClick={() => toggleTopic(topic)}
                     className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
                       topics.includes(topic)
@@ -184,6 +226,7 @@ export default function InterviewSetupPage() {
               </div>
             </CardContent>
           </Card>
+          )}
 
           <Card>
             <CardHeader>
@@ -191,10 +234,27 @@ export default function InterviewSetupPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               {[
-                { label: 'Include resume-based questions', value: includeResume, set: setIncludeResume },
-                { label: 'Include coding round', value: includeCoding, set: setIncludeCoding },
-                { label: 'Exam mode (no hints, stricter)', value: examMode, set: setExamMode },
-              ].map(({ label, value, set }) => (
+                {
+                  label: 'Include resume-based questions (uses your active resume)',
+                  value: includeResume,
+                  set: setIncludeResume,
+                  show: true,
+                },
+                {
+                  label: 'Include a coding round (solved in the editor, graded by tests)',
+                  value: includeCoding,
+                  set: setIncludeCoding,
+                  show: usesTopics,
+                },
+                {
+                  label: 'Exam mode (no hints; focus changes and pastes are recorded)',
+                  value: examMode,
+                  set: setExamMode,
+                  show: true,
+                },
+              ]
+                .filter((o) => o.show)
+                .map(({ label, value, set }) => (
                 <label key={label} className="flex cursor-pointer items-center gap-3">
                   <input
                     type="checkbox"
@@ -221,14 +281,21 @@ export default function InterviewSetupPage() {
             size="lg"
             className="w-full"
             onClick={startInterview}
-            disabled={loading || topics.length === 0}
+            disabled={loading || !config || (usesTopics && topics.length === 0)}
           >
-            {loading ? 'Starting…' : 'Start Interview'}
+            {loading ? 'Preparing your interviewer…' : 'Start Interview'}
           </Button>
-          {topics.length === 0 && (
+          {usesTopics && topics.length === 0 ? (
             <p className="text-center text-sm text-slate-500">
               Select at least one topic to begin.
             </p>
+          ) : (
+            questionCount && (
+              <p className="text-center text-sm text-slate-500">
+                {questionCount} main questions with follow-ups — about {questionCount * 5}–
+                {questionCount * 8} minutes. You can end early at any time.
+              </p>
+            )
           )}
         </div>
       </main>

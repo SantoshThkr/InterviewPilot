@@ -23,6 +23,9 @@ export const INTERVIEW_TYPES = [
   'MIXED',
 ] as const;
 
+/** Interview types whose plan is built from the selected technical topics. */
+export const TOPIC_DRIVEN_TYPES: readonly string[] = ['TECHNICAL', 'MIXED'];
+
 export const TECHNICAL_TOPICS = [
   'JavaScript',
   'React',
@@ -42,6 +45,31 @@ export const TECHNICAL_TOPICS = [
   'Data Structures',
   'Algorithms',
 ] as const;
+
+/**
+ * Non-technical areas an interview can probe. Together with TECHNICAL_TOPICS
+ * this is the closed vocabulary used for weak-area tracking, so the same gap
+ * accumulates across interviews instead of being stored as free text.
+ */
+export const COMPETENCIES = [
+  'Ownership',
+  'Teamwork',
+  'Conflict Resolution',
+  'Handling Failure',
+  'Prioritization',
+  'Communication',
+  'Decision Making',
+  'Leadership',
+  'Mentoring',
+  'Stakeholder Management',
+  'Self-awareness',
+  'Motivation',
+] as const;
+
+export const WEAK_AREA_VOCABULARY: readonly string[] = [
+  ...TECHNICAL_TOPICS,
+  ...COMPETENCIES,
+];
 
 export const DIFFICULTY_LEVELS = [
   'Beginner',
@@ -66,36 +94,27 @@ export type Role = (typeof ROLES)[number];
 export type ExperienceLevel = (typeof EXPERIENCE_LEVELS)[number];
 export type InterviewType = (typeof INTERVIEW_TYPES)[number];
 export type TechnicalTopic = (typeof TECHNICAL_TOPICS)[number];
+export type Competency = (typeof COMPETENCIES)[number];
 export type DifficultyLevel = (typeof DIFFICULTY_LEVELS)[number];
 export type Personality = (typeof PERSONALITIES)[number];
-
-export interface InterviewConfig {
-  role: string;
-  experience: string;
-  type: string;
-  difficulty: string;
-  personality: string;
-  topics: string[];
-  includeCoding: boolean;
-  includeResume: boolean;
-  examMode: boolean;
-}
 
 export interface PersonalityConfig {
   tone: string;
   behavior: string[];
   followUpStyle: string;
+  /** How many follow-ups the interviewer may ask before moving on. */
+  maxFollowUps: number;
 }
 
 export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
   Friendly: {
     tone: 'warm and encouraging but still professional',
     behavior: [
-      'Start with a genuine greeting',
-      'Give brief positive acknowledgments before probing deeper',
+      'Give a brief neutral acknowledgment before probing deeper',
       'Use supportive language when the candidate struggles',
     ],
     followUpStyle: 'Ask clarifying follow-ups gently',
+    maxFollowUps: 2,
   },
   Neutral: {
     tone: 'professional and balanced',
@@ -105,27 +124,28 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Focus on facts and depth of answers',
     ],
     followUpStyle: 'Ask direct follow-up questions',
+    maxFollowUps: 2,
   },
   Strict: {
     tone: 'formal and demanding',
     behavior: [
-      'Interrupt vague or incomplete answers',
-      'Challenge assumptions immediately',
+      'Push back on vague or incomplete answers',
+      'Challenge assumptions',
       'Do not accept surface-level responses',
-      'Ask "Why?" frequently',
     ],
     followUpStyle: 'Push hard on weak points and inconsistencies',
+    maxFollowUps: 3,
   },
   'Very Strict': {
     tone: 'intense and uncompromising',
     behavior: [
-      'Interrupt frequently when answers lack depth',
-      'Challenge every claim with follow-ups',
-      'Express skepticism when answers seem rehearsed',
-      'Apply time pressure verbally',
+      'Challenge every claim that lacks depth',
+      'Express skepticism when answers sound rehearsed',
+      'Keep the pace brisk',
     ],
     followUpStyle:
-      'Relentlessly drill down until the candidate demonstrates mastery or admits gaps',
+      'Drill down until the candidate demonstrates mastery or admits a gap',
+    maxFollowUps: 3,
   },
   'Google style': {
     tone: 'curious and analytical',
@@ -133,141 +153,43 @@ export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
       'Focus on first-principles thinking',
       'Ask about trade-offs and alternatives',
       'Probe scalability and edge cases',
-      'Value structured problem decomposition',
     ],
     followUpStyle:
-      'Ask "What if the data grows to one million users?" and similar scale questions',
+      'Ask how the approach changes at larger scale or under different constraints',
+    maxFollowUps: 2,
   },
   'Amazon style': {
     tone: 'structured and leadership-focused',
     behavior: [
-      'Use STAR format for behavioral questions',
-      'Ask about ownership and customer obsession',
-      'Probe deeply into specific examples from resume',
+      'Expect STAR-structured answers for experience questions',
+      'Ask about ownership and customer impact',
       'Ask about failures and what was learned',
     ],
     followUpStyle:
-      'Ask for specific metrics, your exact role, and what you would do differently',
+      'Ask for specific metrics, the candidate’s exact role, and what they would do differently',
+    maxFollowUps: 2,
   },
   'Startup style': {
     tone: 'fast-moving and practical',
     behavior: [
-      'Focus on breadth and shipping ability',
-      'Ask about wearing multiple hats',
+      'Focus on shipping ability and pragmatism',
       'Prioritize practical trade-offs over textbook answers',
-      'Move quickly between topics',
     ],
     followUpStyle:
-      'Ask how they would ship this in a week with limited resources',
+      'Ask how they would ship this quickly with limited resources',
+    maxFollowUps: 2,
   },
   'Fast-paced': {
     tone: 'energetic with minimal pauses',
     behavior: [
       'Move quickly between questions',
-      'Cut off rambling answers politely',
-      'Stack follow-up questions rapidly',
-      'Create a sense of time pressure',
+      'Politely cut short rambling answers',
     ],
-    followUpStyle:
-      'Ask rapid-fire follow-ups without waiting for perfect answers',
+    followUpStyle: 'Ask one sharp follow-up, then move on',
+    maxFollowUps: 1,
   },
 };
 
-export function buildSystemPrompt(
-  config: InterviewConfig,
-  resumeContent?: string,
-): string {
-  const personality =
-    PERSONALITY_CONFIGS[config.personality] ?? PERSONALITY_CONFIGS.Neutral;
-
-  const typeInstructions: Record<string, string> = {
-    TECHNICAL: `Focus on deep technical questions about: ${config.topics.join(', ')}.
-Ask follow-ups like: Why? Can you explain further? What are the trade-offs? What alternatives did you consider?
-Never accept surface-level answers. Drill into implementation details, performance, edge cases, and mistakes made.`,
-    HR: `Ask HR questions: tell me about yourself, strengths, weaknesses, career goals, salary expectations, why should we hire you, why this role.
-Evaluate communication clarity and self-awareness.`,
-    BEHAVIORAL: `Use situation-based questions requiring STAR format (Situation, Task, Action, Result).
-Cover: ownership, teamwork, conflict, deadlines, pressure, decision making, communication.`,
-    MANAGERIAL: `Focus on: project ownership, architecture decisions, mentoring, code reviews, prioritization, trade-offs, team leadership.
-Expect senior-level depth for ${config.experience} experience.`,
-    MIXED: `Run a realistic full interview flow:
-1. Greeting and introduction
-2. Resume/project discussion
-3. Technical deep-dives on ${config.topics.slice(0, 5).join(', ')}
-4. Behavioral questions (STAR format)
-5. Brief system design or architecture discussion if experience warrants
-6. Allow candidate questions at the end`,
-  };
-
-  return `You are a senior software engineering interviewer at a top tech company (Amazon, Google, Microsoft, Adobe, Atlassian, Walmart level).
-
-CRITICAL RULES — YOU ARE AN INTERVIEWER, NOT A TUTOR:
-- NEVER give answers, hints, or teach concepts unless the candidate is completely stuck AND exam mode is off
-- NEVER say "Great question!" or praise excessively
-- ALWAYS ask follow-up questions before moving on — never simply accept an answer and move to the next topic
-- Challenge vague answers: "Can you be more specific?", "What exactly did YOU do?", "Why that approach?"
-- Interrupt when answers are rambling or off-topic (based on personality)
-- Ask "Why?", "What if?", "How would you optimize?", "What are the trade-offs?" frequently
-- Reference specific items from the candidate's resume when available
-- Adapt question difficulty to ${config.difficulty} level for a ${config.role} with ${config.experience} experience
-
-PERSONALITY: ${config.personality}
-- Tone: ${personality.tone}
-- Behaviors: ${personality.behavior.join('; ')}
-- Follow-up style: ${personality.followUpStyle}
-
-INTERVIEW TYPE: ${config.type}
-${typeInstructions[config.type] ?? typeInstructions.MIXED}
-
-${resumeContent ? `CANDIDATE RESUME:\n${resumeContent.slice(0, 8000)}\n\nGenerate questions specifically about their companies, projects, technologies, achievements, and any career gaps.` : ''}
-
-${config.examMode ? 'EXAM MODE: Do NOT provide hints. Evaluate strictly.' : 'You may give minimal hints only if the candidate is clearly stuck after multiple attempts.'}
-
-Keep responses concise (2-4 sentences for questions). One question at a time unless doing rapid follow-ups.
-Start with a brief professional greeting if this is the first message.`;
-}
-
-export function buildReportPrompt(
-  messages: { role: string; content: string }[],
-  config: InterviewConfig,
-): string {
-  return `Analyze this completed mock interview and generate a detailed performance report.
-
-Interview config:
-- Role: ${config.role}
-- Experience: ${config.experience}
-- Type: ${config.type}
-- Difficulty: ${config.difficulty}
-- Topics: ${config.topics.join(', ')}
-
-Transcript:
-${messages.map((m) => `${m.role}: ${m.content}`).join('\n\n')}
-
-Respond ONLY with valid JSON in this exact structure:
-{
-  "overallScore": 0-100,
-  "communicationScore": 0-100,
-  "technicalScore": 0-100,
-  "confidenceScore": 0-100,
-  "problemSolvingScore": 0-100,
-  "codingScore": 0-100 or null,
-  "systemDesignScore": 0-100 or null,
-  "behavioralScore": 0-100 or null,
-  "strengths": ["..."],
-  "weaknesses": ["..."],
-  "knowledgeGaps": ["..."],
-  "topicsToRevise": ["..."],
-  "mistakes": ["..."],
-  "learningRoadmap": [{"topic": "...", "priority": "high|medium|low", "resources": ["..."]}],
-  "readinessPercent": 0-100,
-  "summary": "2-3 paragraph honest assessment"
-}`;
-}
-
-export function buildFollowUpPrompt(lastAnswer: string, topic: string): string {
-  return `The candidate just answered: "${lastAnswer}"
-
-Based on this answer about ${topic}, generate 1-2 natural follow-up questions an experienced interviewer would ask.
-Focus on: depth, trade-offs, edge cases, personal experience, or challenging assumptions.
-Do NOT answer the question yourself. Output only the follow-up question(s).`;
+export function personalityConfig(personality: string): PersonalityConfig {
+  return PERSONALITY_CONFIGS[personality] ?? PERSONALITY_CONFIGS.Neutral;
 }

@@ -97,16 +97,16 @@ export default function DashboardPage() {
     <>
       <AppNav />
       <main className="mx-auto max-w-7xl flex-1 px-4 py-8">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold">Dashboard</h1>
             <p className="text-slate-400">Track your interview readiness</p>
           </div>
-          <Link href="/interview/setup">
-            <Button className="gap-2">
+          <Button asChild className="gap-2">
+            <Link href="/interview/setup">
               <Mic className="h-4 w-4" /> New Interview
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
 
         <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

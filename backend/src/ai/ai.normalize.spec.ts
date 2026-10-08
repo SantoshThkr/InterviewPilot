@@ -1,39 +1,10 @@
-import { normalizeReport, normalizeResume } from './ai.normalize';
-
-describe('normalizeReport', () => {
-  it('returns a safe fallback for malformed JSON', () => {
-    const r = normalizeReport('not json{');
-    expect(r.overallScore).toBe(0);
-    expect(r.strengths).toEqual([]);
-    expect(r.summary).toMatch(/could not be generated/i);
-  });
-
-  it('clamps out-of-range scores into 0-100', () => {
-    const r = normalizeReport(
-      JSON.stringify({ overallScore: 150, technicalScore: -20 }),
-    );
-    expect(r.overallScore).toBe(100);
-    expect(r.technicalScore).toBe(0);
-  });
-
-  it('keeps optional scores null when absent', () => {
-    const r = normalizeReport(JSON.stringify({ overallScore: 70 }));
-    expect(r.codingScore).toBeNull();
-    expect(r.behavioralScore).toBeNull();
-  });
-
-  it('drops non-string entries from string arrays', () => {
-    const r = normalizeReport(
-      JSON.stringify({ strengths: ['clear', 42, null, 'structured'] }),
-    );
-    expect(r.strengths).toEqual(['clear', 'structured']);
-  });
-});
+import { normalizeResume } from './ai.normalize';
 
 describe('normalizeResume', () => {
   it('returns empty structures for malformed JSON', () => {
     const r = normalizeResume('{bad');
     expect(r.companies).toEqual([]);
+    expect(r.projects).toEqual([]);
     expect(r.experienceYears).toBe(0);
   });
 
@@ -43,5 +14,37 @@ describe('normalizeResume', () => {
     );
     expect(r.companies).toEqual(['Acme']);
     expect(r.experienceYears).toBe(4);
+  });
+
+  it('coerces objects to strings so the UI never renders an object', () => {
+    const r = normalizeResume(
+      JSON.stringify({
+        companies: [{ name: 'Acme', role: 'Engineer' }, 'Globex', 42, null],
+        technologies: ['React', { title: 'Node.js' }, ['nested']],
+      }),
+    );
+    expect(r.companies).toEqual(['Acme', 'Globex', '42']);
+    expect(r.technologies).toEqual(['React', 'Node.js']);
+  });
+
+  it('normalizes projects and drops unnamed ones', () => {
+    const r = normalizeResume(
+      JSON.stringify({
+        projects: [
+          { name: 'Checkout', description: 'Payments', technologies: ['Go'] },
+          { description: 'no name' },
+          'Side project',
+        ],
+      }),
+    );
+    expect(r.projects).toEqual([
+      { name: 'Checkout', description: 'Payments', technologies: ['Go'] },
+      { name: 'Side project', description: '', technologies: [] },
+    ]);
+  });
+
+  it('rejects implausible experience values', () => {
+    expect(normalizeResume('{"experienceYears": -3}').experienceYears).toBe(0);
+    expect(normalizeResume('{"experienceYears": "7"}').experienceYears).toBe(7);
   });
 });

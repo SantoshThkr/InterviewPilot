@@ -17,6 +17,12 @@ interface Interview {
   report?: { overallScore: number; readinessPercent: number };
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  IN_PROGRESS: 'In progress',
+  COMPLETED: 'Completed',
+  ABANDONED: 'Ended without answers',
+};
+
 export default function HistoryPage() {
   const { authFetch } = useApiAuth();
   const [interviews, setInterviews] = useState<Interview[]>([]);
@@ -55,7 +61,7 @@ export default function HistoryPage() {
                       {i.type} · {i.difficulty} · {i.personality}
                     </p>
                     <p className="text-xs text-slate-500">
-                      {new Date(i.createdAt).toLocaleString()} · {i.status}
+                      {new Date(i.createdAt).toLocaleString()} · {STATUS_LABELS[i.status] ?? i.status}
                     </p>
                   </div>
                   {i.report && (

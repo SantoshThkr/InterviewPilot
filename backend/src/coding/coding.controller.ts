@@ -1,26 +1,21 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CodingService } from './coding.service';
-import { CODING_PROBLEMS } from './coding.problems';
-import { AuthGuard } from '../auth/auth.guard';
+import { CODING_PROBLEMS, SUPPORTED_LANGUAGES } from './coding.problems';
 import { RunCodeDto } from './dto/coding.dto';
 
 @Controller('coding')
-@UseGuards(AuthGuard)
 export class CodingController {
   constructor(private codingService: CodingService) {}
 
   @Get('problems')
   listProblems() {
-    // Never expose testCases (hidden tests) or starterCode bodies in the list view.
+    // Never expose test cases in the list view.
     return CODING_PROBLEMS.map((p) => ({
       id: p.id,
       title: p.title,
       difficulty: p.difficulty,
-      description: p.description,
-      examples: p.examples,
-      constraints: p.constraints,
-      functionName: p.functionName,
-      languages: Object.keys(p.starterCode),
+      languages: SUPPORTED_LANGUAGES,
     }));
   }
 
@@ -29,6 +24,8 @@ export class CodingController {
     return this.codingService.getProblem(id);
   }
 
+  /** Practice runs outside an interview. Each run spawns a sandbox worker. */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('run')
   runCode(@Body() dto: RunCodeDto) {
     return this.codingService.runTests(dto.problemId, dto.code, dto.language);

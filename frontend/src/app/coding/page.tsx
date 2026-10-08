@@ -1,9 +1,10 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { Play, RotateCcw, Lightbulb, Clock } from 'lucide-react';
+import { ArrowLeft, Clock, Lightbulb, Play, RotateCcw } from 'lucide-react';
 import { AppNav } from '@/components/layout/app-nav';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,15 +20,24 @@ import { formatDuration } from '@/lib/utils';
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
-interface Problem {
+const LANGUAGE_LABELS: Record<string, string> = {
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+};
+
+interface ProblemSummary {
   id: string;
   title: string;
   difficulty: string;
+}
+
+interface Problem extends ProblemSummary {
   description: string;
   examples: { input: string; output: string; explanation?: string }[];
   constraints: string[];
   starterCode: Record<string, string>;
-  testCases: { input?: unknown; expected?: unknown; visible: boolean }[];
+  languages: string[];
+  hints: string[];
 }
 
 interface TestResult {
@@ -44,60 +54,90 @@ function CodingPageContent() {
   const interviewId = searchParams.get('interview');
   const { authFetch } = useApiAuth();
 
-  const [problems, setProblems] = useState<{ id: string; title: string; difficulty: string }[]>([]);
+  const [problems, setProblems] = useState<ProblemSummary[]>([]);
   const [selectedId, setSelectedId] = useState('two-sum');
   const [problem, setProblem] = useState<Problem | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [language, setLanguage] = useState('javascript');
   const [code, setCode] = useState('');
   const [results, setResults] = useState<TestResult[]>([]);
   const [running, setRunning] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [hintsUsed, setHintsUsed] = useState(0);
   const [runError, setRunError] = useState<string | null>(null);
+  const [hintsShown, setHintsShown] = useState(0);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+
+  // Unsaved work per problem+language, so switching never discards code.
+  const drafts = useRef(new Map<string, string>());
+  const languageRef = useRef(language);
+  const draftFor = (p: Problem, lang: string) =>
+    drafts.current.get(`${p.id}:${lang}`) ?? p.starterCode[lang] ?? '';
 
   useEffect(() => {
-    authFetch<{ id: string; title: string; difficulty: string }[]>('/coding/problems')
+    authFetch<ProblemSummary[]>('/coding/problems')
       .then(setProblems)
-      .catch(console.error);
+      .catch((err: Error) => setLoadError(err.message));
   }, [authFetch]);
 
   useEffect(() => {
+    let active = true;
     authFetch<Problem>(`/coding/problems/${selectedId}`)
       .then((p) => {
+        if (!active) return;
         setProblem(p);
-        setCode(p.starterCode[language] ?? p.starterCode.javascript ?? '');
+        setCode(draftFor(p, languageRef.current));
         setResults([]);
+        setRunError(null);
+        setHintsShown(0);
+        setStartedAt(Date.now());
       })
-      .catch(console.error);
-  }, [authFetch, selectedId, language]);
+      .catch((err: Error) => active && setLoadError(err.message));
+    return () => {
+      active = false;
+    };
+  }, [authFetch, selectedId]);
 
   useEffect(() => {
-    const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+
+  const updateCode = (value: string) => {
+    setCode(value);
+    if (problem) drafts.current.set(`${problem.id}:${language}`, value);
+  };
+
+  const changeLanguage = (lang: string) => {
+    languageRef.current = lang;
+    setLanguage(lang);
+    if (problem) setCode(draftFor(problem, lang));
+  };
+
   const runCode = async () => {
+    if (!problem) return;
     setRunning(true);
     setRunError(null);
     try {
-      const res = await authFetch<{ results: TestResult[] }>('/coding/run', {
-        method: 'POST',
-        body: JSON.stringify({ problemId: selectedId, code, language }),
-      });
-      setResults(res.results);
-
-      if (interviewId) {
-        await authFetch(`/interviews/${interviewId}/coding`, {
-          method: 'POST',
-          body: JSON.stringify({
-            problemId: selectedId,
-            code,
-            language,
-            timeSpentSecs: elapsed,
-            hintsUsed,
-          }),
-        });
-      }
+      // Inside an interview the submission endpoint runs the tests and records
+      // the attempt in one call; practice runs use the stateless endpoint.
+      const res = interviewId
+        ? await authFetch<{ testResults: TestResult[] }>(`/interviews/${interviewId}/coding`, {
+            method: 'POST',
+            body: JSON.stringify({
+              problemId: problem.id,
+              code,
+              language,
+              timeSpentSecs: Math.min(elapsed, 86_400),
+              hintsUsed: hintsShown,
+            }),
+          }).then((r) => r.testResults)
+        : await authFetch<{ results: TestResult[] }>('/coding/run', {
+            method: 'POST',
+            body: JSON.stringify({ problemId: problem.id, code, language }),
+          }).then((r) => r.results);
+      setResults(res);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to run your code.');
     } finally {
@@ -105,48 +145,87 @@ function CodingPageContent() {
     }
   };
 
-  const requestHint = () => {
-    setHintsUsed((h) => h + 1);
-    alert(
-      hintsUsed === 0
-        ? 'Think about what data structure gives O(1) lookups.'
-        : hintsUsed === 1
-          ? 'Consider using a hash map to store complements.'
-          : 'Iterate through the array once, checking if (target - current) exists in your map.',
-    );
+  const resetCode = () => {
+    if (!problem) return;
+    if (!window.confirm('Discard your code and restore the starter template?')) return;
+    drafts.current.delete(`${problem.id}:${language}`);
+    setCode(problem.starterCode[language] ?? '');
   };
+
+  const showHint = () => {
+    if (!problem || hintsShown >= problem.hints.length) return;
+    setHintsShown((h) => h + 1);
+    if (interviewId) {
+      authFetch(`/interviews/${interviewId}/events`, {
+        method: 'POST',
+        body: JSON.stringify({
+          type: 'HINT_REQUESTED',
+          metadata: { problemId: problem.id, level: hintsShown + 1 },
+        }),
+      }).catch(() => {
+        /* best-effort */
+      });
+    }
+  };
+
+  const passed = results.filter((r) => r.passed).length;
 
   return (
     <>
       <AppNav />
-      <main className="mx-auto max-w-7xl flex-1 px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Coding Round</h1>
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            {interviewId && (
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/interview/${interviewId}`}>
+                  <ArrowLeft className="h-4 w-4" /> Back to interview
+                </Link>
+              </Button>
+            )}
+            <h1 className="text-2xl font-bold">Coding Round</h1>
+          </div>
           <div className="flex items-center gap-4 text-sm text-slate-400">
             <span className="flex items-center gap-1">
               <Clock className="h-4 w-4" /> {formatDuration(elapsed)}
             </span>
-            <span>Hints: {hintsUsed}</span>
+            <span>
+              Hints: {hintsShown}/{problem?.hints.length ?? 0}
+            </span>
           </div>
         </div>
+
+        {interviewId && (
+          <p className="mb-4 text-sm text-slate-400">
+            Every run is recorded for this interview; your best run per problem counts toward the
+            coding score in your report.
+          </p>
+        )}
+
+        {loadError && (
+          <div
+            role="alert"
+            className="mb-4 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+          >
+            {loadError}
+          </div>
+        )}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <Select value={selectedId} onValueChange={setSelectedId}>
-                  <SelectTrigger className="w-64">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {problems.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.title} ({p.difficulty})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <Select value={selectedId} onValueChange={setSelectedId}>
+                <SelectTrigger className="w-full sm:w-72" aria-label="Problem">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {problems.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.title} ({p.difficulty})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </CardHeader>
             <CardContent className="max-h-[70vh] overflow-y-auto">
               {problem && (
@@ -167,7 +246,7 @@ function CodingPageContent() {
                   <p className="mb-4 whitespace-pre-wrap text-sm text-slate-300">
                     {problem.description}
                   </p>
-                  <h4 className="mb-2 font-medium">Examples</h4>
+                  <h2 className="mb-2 font-medium">Examples</h2>
                   {problem.examples.map((ex, i) => (
                     <div key={i} className="mb-3 rounded-lg bg-slate-900 p-3 font-mono text-xs">
                       <p>Input: {ex.input}</p>
@@ -177,12 +256,25 @@ function CodingPageContent() {
                       )}
                     </div>
                   ))}
-                  <h4 className="mb-2 font-medium">Constraints</h4>
+                  <h2 className="mb-2 font-medium">Constraints</h2>
                   <ul className="list-inside list-disc text-xs text-slate-400">
                     {problem.constraints.map((c) => (
                       <li key={c}>{c}</li>
                     ))}
                   </ul>
+
+                  {hintsShown > 0 && (
+                    <div className="mt-4 space-y-2" aria-live="polite">
+                      {problem.hints.slice(0, hintsShown).map((hint, i) => (
+                        <div
+                          key={hint}
+                          className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-100"
+                        >
+                          <span className="font-medium">Hint {i + 1}:</span> {hint}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="mt-4 rounded-lg border border-indigo-800 bg-indigo-950/30 p-3 text-sm">
                     <p className="font-medium text-indigo-300">Interviewer asks:</p>
@@ -197,35 +289,43 @@ function CodingPageContent() {
           </Card>
 
           <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-2">
-              <Select value={language} onValueChange={setLanguage}>
-                <SelectTrigger className="w-40">
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={language} onValueChange={changeLanguage}>
+                <SelectTrigger className="w-40" aria-label="Language">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {['javascript', 'typescript', 'python', 'java', 'cpp'].map((l) => (
-                    <SelectItem key={l} value={l}>{l}</SelectItem>
+                  {(problem?.languages ?? ['javascript', 'typescript']).map((l) => (
+                    <SelectItem key={l} value={l}>
+                      {LANGUAGE_LABELS[l] ?? l}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <Button onClick={runCode} disabled={running} className="gap-1">
-                <Play className="h-4 w-4" /> Run
+              <Button onClick={runCode} disabled={running || !problem} className="gap-1">
+                <Play className="h-4 w-4" /> {running ? 'Running…' : 'Run tests'}
               </Button>
-              <Button variant="secondary" onClick={() => setCode(problem?.starterCode[language] ?? '')}>
+              <Button variant="secondary" onClick={resetCode} aria-label="Reset to starter code">
                 <RotateCcw className="h-4 w-4" />
               </Button>
-              <Button variant="outline" onClick={requestHint} className="gap-1">
-                <Lightbulb className="h-4 w-4" /> Hint
+              <Button
+                variant="outline"
+                onClick={showHint}
+                className="gap-1"
+                disabled={!problem || hintsShown >= problem.hints.length}
+              >
+                <Lightbulb className="h-4 w-4" />
+                {problem && hintsShown >= problem.hints.length ? 'No more hints' : 'Hint'}
               </Button>
             </div>
 
             <div className="overflow-hidden rounded-xl border border-slate-800">
               <MonacoEditor
                 height="400px"
-                language={language === 'cpp' ? 'cpp' : language}
+                language={language}
                 theme="vs-dark"
                 value={code}
-                onChange={(v) => setCode(v ?? '')}
+                onChange={(v) => updateCode(v ?? '')}
                 options={{ minimap: { enabled: false }, fontSize: 14 }}
               />
             </div>
@@ -243,10 +343,10 @@ function CodingPageContent() {
               <Card>
                 <CardHeader>
                   <CardTitle>
-                    Results: {results.filter((r) => r.passed).length}/{results.length} passed
+                    Results: {passed}/{results.length} passed
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="space-y-2" aria-live="polite">
                   {results.map((r, i) => (
                     <div
                       key={i}
@@ -260,7 +360,12 @@ function CodingPageContent() {
                         Test {i + 1}: {r.passed ? 'Passed' : 'Failed'}
                         {!r.visible && ' (hidden)'}
                       </p>
-                      {r.error && <p className="text-red-300">{r.error}</p>}
+                      {r.visible && !r.passed && !r.error && (
+                        <p className="mt-1 font-mono text-xs text-slate-300">
+                          Expected {JSON.stringify(r.expected)}, got {JSON.stringify(r.actual)}
+                        </p>
+                      )}
+                      {r.error && <p className="mt-1 text-red-300">{r.error}</p>}
                     </div>
                   ))}
                 </CardContent>

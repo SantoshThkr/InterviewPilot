@@ -1,218 +1,277 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Mic, MicOff, Send, Square, Code2, AlertTriangle } from 'lucide-react';
-import { useAuth } from '@clerk/nextjs';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Code2,
+  Mic,
+  MicOff,
+  Send,
+  ShieldAlert,
+  Square,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { AppNav } from '@/components/layout/app-nav';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
 import { useApiAuth } from '@/hooks/use-api-auth';
-import { streamMessage } from '@/lib/api';
+import { useSpeechRecognition, useSpeechSynthesis } from '@/hooks/use-voice';
+import { ApiError, streamMessage } from '@/lib/api';
+import { createClientId } from '@/lib/sse';
+import type {
+  CompletionResult,
+  Interview,
+  InterviewMessage,
+  TurnResult,
+} from '@/lib/types';
 import { formatDuration } from '@/lib/utils';
 
-interface Message {
-  id: string;
-  role: 'INTERVIEWER' | 'CANDIDATE' | 'SYSTEM';
+interface PendingAnswer {
   content: string;
-  createdAt: string;
+  /** Reused on retry so the server can recognise an already-saved answer. */
+  clientMessageId: string;
 }
 
-interface Interview {
-  id: string;
-  role: string;
-  personality: string;
-  difficulty: string;
-  status: string;
-  messages: Message[];
-  config?: { examMode?: boolean };
+function useElapsedSeconds(startedAt: string | null | undefined, running: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  if (!startedAt) return 0;
+  return Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
 }
+
+const errorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error && err.message ? err.message : fallback;
 
 export default function LiveInterviewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { authFetch } = useApiAuth();
-  const { getToken } = useAuth();
+  const { authFetch, requireToken } = useApiAuth();
 
   const [interview, setInterview] = useState<Interview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState('');
+  const [failedAnswer, setFailedAnswer] = useState<PendingAnswer | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [ending, setEnding] = useState(false);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [integrity, setIntegrity] = useState({ focusLost: 0, pastes: 0 });
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const inFlight = useRef(false);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  const recognition = useSpeechRecognition(setInput);
+  const synthesis = useSpeechSynthesis(voiceEnabled);
+
+  const adoptInterview = useCallback(
+    (data: Interview) => {
+      if (data.status === 'COMPLETED') {
+        router.replace(`/interview/${id}/report`);
+        return;
+      }
+      setInterview(data);
+      setIntegrity({
+        focusLost: data.events.filter((e) => e.type === 'FOCUS_LOST').length,
+        pastes: data.events.filter((e) => e.type === 'COPY_PASTE').length,
+      });
+    },
+    [id, router],
+  );
 
   useEffect(() => {
     let active = true;
     authFetch<Interview>(`/interviews/${id}`)
-      .then((data) => {
-        if (!active) return;
-        if (data.status === 'COMPLETED') {
-          router.replace(`/interview/${id}/report`);
-          return;
-        }
-        setInterview(data);
-      })
-      .catch((err: Error) => active && setLoadError(err.message));
+      .then((data) => active && adoptInterview(data))
+      .catch((err: unknown) => active && setLoadError(errorMessage(err, 'Could not load the interview.')));
     return () => {
       active = false;
     };
-  }, [authFetch, id, router]);
+  }, [authFetch, adoptInterview, id]);
+
+  const isOpen = interview?.status === 'IN_PROGRESS';
+  const concluded = !!interview?.progress?.concluded;
+  const examMode = !!interview?.config?.examMode && isOpen;
+  const elapsed = useElapsedSeconds(interview?.startedAt, isOpen && !concluded);
 
   useEffect(() => {
-    const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [interview?.messages, streamBuffer]);
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [interview?.messages.length, streamBuffer]);
 
   const recordEvent = useCallback(
-    (type: string, metadata?: Record<string, unknown>) => {
+    (type: 'FOCUS_LOST' | 'COPY_PASTE') => {
       authFetch(`/interviews/${id}/events`, {
         method: 'POST',
-        body: JSON.stringify({ type, metadata }),
-      }).catch(console.error);
+        body: JSON.stringify({ type }),
+      }).catch(() => {
+        /* Integrity events are best-effort. */
+      });
     },
     [authFetch, id],
   );
 
+  // Exam-mode integrity signals. Only recorded when the candidate opted in.
   useEffect(() => {
+    if (!examMode) return;
+    let lastBlur = 0;
     const onBlur = () => {
-      setWarnings((w) => [...w, 'Browser lost focus — flagged in exam report']);
+      const now = Date.now();
+      if (now - lastBlur < 3000) return; // one event per focus loss, not per flicker
+      lastBlur = now;
+      setIntegrity((c) => ({ ...c, focusLost: c.focusLost + 1 }));
       recordEvent('FOCUS_LOST');
     };
     const onPaste = () => {
-      setWarnings((w) => [...w, 'Copy/paste detected']);
+      setIntegrity((c) => ({ ...c, pastes: c.pastes + 1 }));
       recordEvent('COPY_PASTE');
     };
-
     window.addEventListener('blur', onBlur);
     document.addEventListener('paste', onPaste);
     return () => {
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('paste', onPaste);
     };
-  }, [recordEvent]);
+  }, [examMode, recordEvent]);
 
-  const speak = (text: string) => {
-    if (!voiceEnabled || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const startListening = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Speech recognition not supported in this browser');
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map((r) => r[0].transcript)
-        .join('');
-      setInput(transcript);
-    };
-
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => setIsListening(false);
-
-    recognitionRef.current = recognition;
-    recognition.start();
-    setIsListening(true);
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || streaming) return;
-
-    const content = input.trim();
-    setInput('');
-    setSendError(null);
-    setStreaming(true);
-    setStreamBuffer('');
-
-    const tempId = `temp-${Date.now()}`;
+  const applyTurn = (turn: TurnResult, optimisticId: string) => {
     setInterview((prev) =>
       prev
         ? {
             ...prev,
+            progress: turn.progress,
             messages: [
-              ...prev.messages,
-              {
-                id: tempId,
-                role: 'CANDIDATE',
-                content,
-                createdAt: new Date().toISOString(),
-              },
+              ...prev.messages.filter((m) => m.id !== optimisticId),
+              turn.candidate,
+              turn.interviewer,
             ],
           }
         : prev,
     );
+  };
+
+  /** After a failure, check whether the server saved the turn anyway. */
+  const resync = async (clientMessageId: string): Promise<boolean> => {
+    try {
+      const fresh = await authFetch<Interview>(`/interviews/${id}`);
+      const saved = fresh.messages.some(
+        (m) => m.role === 'CANDIDATE' && m.metadata?.clientMessageId === clientMessageId,
+      );
+      if (saved || fresh.status !== 'IN_PROGRESS') {
+        adoptInterview(fresh);
+        return true;
+      }
+    } catch {
+      /* Still offline; fall through to the retry UI. */
+    }
+    return false;
+  };
+
+  const submit = async (answer: PendingAnswer) => {
+    if (inFlight.current || !interview) return;
+    inFlight.current = true;
+    recognition.stop();
+    synthesis.cancel();
+    setStreaming(true);
+    setStreamBuffer('');
+    setSendError(null);
+    setFailedAnswer(null);
+    setInput('');
+
+    const optimistic: InterviewMessage = {
+      id: `pending-${answer.clientMessageId}`,
+      role: 'CANDIDATE',
+      content: answer.content,
+      createdAt: new Date().toISOString(),
+      metadata: { clientMessageId: answer.clientMessageId },
+    };
+    setInterview((prev) =>
+      prev ? { ...prev, messages: [...prev.messages, optimistic] } : prev,
+    );
 
     try {
-      const token = await getToken();
+      const token = await requireToken();
       let accumulated = '';
-
-      await streamMessage(
+      const turn = await streamMessage(
         `/interviews/${id}/message`,
-        { content },
+        { content: answer.content, clientMessageId: answer.clientMessageId },
         (chunk) => {
           accumulated += chunk;
           setStreamBuffer(accumulated);
         },
-        { token: token ?? undefined },
+        { token },
       );
-
-      speak(accumulated);
-      const updated = await authFetch<Interview>(`/interviews/${id}`);
-      setInterview(updated);
-      setStreamBuffer('');
+      applyTurn(turn, optimistic.id);
+      synthesis.speak(turn.interviewer.content);
     } catch (err) {
-      // The server persisted nothing on failure — roll back the optimistic
-      // message, restore the input, and let the candidate retry.
-      setInterview((prev) =>
-        prev
-          ? { ...prev, messages: prev.messages.filter((m) => m.id !== tempId) }
-          : prev,
-      );
-      setInput(content);
       setStreamBuffer('');
-      setSendError(
-        err instanceof Error ? err.message : 'Failed to send. Please try again.',
-      );
+      const recovered = await resync(answer.clientMessageId);
+      if (!recovered) {
+        setInterview((prev) =>
+          prev ? { ...prev, messages: prev.messages.filter((m) => m.id !== optimistic.id) } : prev,
+        );
+        setFailedAnswer(answer);
+        setInput(answer.content);
+        setSendError(
+          err instanceof ApiError && err.status === 409
+            ? err.message
+            : `${errorMessage(err, 'Your answer could not be sent.')} Your answer is kept below — retry when ready.`,
+        );
+      }
     } finally {
+      setStreamBuffer('');
       setStreaming(false);
+      inFlight.current = false;
     }
   };
 
+  const handleSend = () => {
+    const content = input.trim();
+    if (!content || streaming) return;
+    const clientMessageId =
+      failedAnswer && failedAnswer.content === content
+        ? failedAnswer.clientMessageId
+        : createClientId();
+    void submit({ content, clientMessageId });
+  };
+
   const endInterview = async () => {
-    if (!confirm('End interview and generate report?')) return;
+    if (!interview) return;
+    const answered = interview.messages.some((m) => m.role === 'CANDIDATE');
+    const confirmation = concluded
+      ? null
+      : answered
+        ? 'End the interview now and generate your report? Unanswered questions lower your readiness score.'
+        : 'You have not answered any questions yet. End the interview without a report?';
+    if (confirmation && !window.confirm(confirmation)) return;
+
     setEnding(true);
+    setSendError(null);
+    recognition.stop();
+    synthesis.cancel();
     try {
-      await authFetch(`/interviews/${id}/complete`, { method: 'POST' });
-      router.push(`/interview/${id}/report`);
+      const result = await authFetch<CompletionResult>(`/interviews/${id}/complete`, {
+        method: 'POST',
+      });
+      if (result.status === 'COMPLETED') {
+        router.push(`/interview/${id}/report`);
+        return;
+      }
+      setInterview((prev) => (prev ? { ...prev, status: result.status } : prev));
+      setEnding(false);
     } catch (err) {
       setEnding(false);
       setSendError(
-        err instanceof Error ? err.message : 'Could not generate the report.',
+        `${errorMessage(err, 'The report could not be generated.')} Your interview is saved, so you can try again.`,
       );
     }
   };
@@ -221,7 +280,7 @@ export default function LiveInterviewPage() {
     return (
       <>
         <AppNav />
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-20 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
           <p className="text-slate-300">{loadError}</p>
           <Button variant="secondary" onClick={() => router.push('/dashboard')}>
             Back to dashboard
@@ -235,83 +294,147 @@ export default function LiveInterviewPage() {
     return (
       <>
         <AppNav />
-        <div className="flex flex-1 items-center justify-center p-20 text-slate-400">
-          Loading interview...
+        <div className="flex flex-1 items-center justify-center p-8 text-slate-400" role="status">
+          Loading interview…
         </div>
       </>
     );
   }
 
+  if (interview.status === 'ABANDONED') {
+    return (
+      <>
+        <AppNav />
+        <div className="mx-auto flex max-w-lg flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+          <h1 className="text-xl font-semibold">This interview has ended</h1>
+          <p className="text-slate-400">
+            It was ended before any questions were answered, so there is nothing to evaluate.
+          </p>
+          <div className="flex gap-3">
+            <Button asChild>
+              <Link href="/interview/setup">Start a new interview</Link>
+            </Button>
+            <Button asChild variant="secondary">
+              <Link href="/dashboard">Dashboard</Link>
+            </Button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  const progress = interview.progress;
+  const progressPercent = progress
+    ? concluded
+      ? 100
+      : Math.round(((progress.current - 1) / progress.total) * 100)
+    : 0;
+  const busy = streaming || ending;
+
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex max-w-5xl flex-1 flex-col px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
             <h1 className="text-xl font-bold">{interview.role} Interview</h1>
             <p className="text-sm text-slate-400">
-              {interview.personality} · {interview.difficulty} · {formatDuration(elapsed)}
+              {interview.personality} · {interview.difficulty} ·{' '}
+              <span aria-label="Elapsed time">{formatDuration(elapsed)}</span>
             </p>
           </div>
-          <div className="flex gap-2">
-            <Button
-              variant={voiceEnabled ? 'default' : 'secondary'}
-              size="sm"
-              onClick={() => setVoiceEnabled(!voiceEnabled)}
-            >
-              {voiceEnabled ? 'Voice On' : 'Voice Off'}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => router.push(`/coding?interview=${id}`)}>
-              <Code2 className="mr-1 h-4 w-4" /> Coding
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={endInterview}
-              disabled={ending}
-            >
-              <Square className="mr-1 h-4 w-4" /> {ending ? 'Ending…' : 'End'}
+          <div className="flex flex-wrap gap-2">
+            {synthesis.supported && (
+              <Button
+                variant={voiceEnabled ? 'default' : 'secondary'}
+                size="sm"
+                onClick={() => setVoiceEnabled((v) => !v)}
+                aria-pressed={voiceEnabled}
+              >
+                {voiceEnabled ? (
+                  <Volume2 className="mr-1 h-4 w-4" />
+                ) : (
+                  <VolumeX className="mr-1 h-4 w-4" />
+                )}
+                Read aloud
+              </Button>
+            )}
+            {interview.config?.includeCoding && (
+              <Button asChild variant="secondary" size="sm">
+                <Link href={`/coding?interview=${id}`}>
+                  <Code2 className="mr-1 h-4 w-4" /> Coding round
+                </Link>
+              </Button>
+            )}
+            <Button variant="destructive" size="sm" onClick={endInterview} disabled={busy}>
+              <Square className="mr-1 h-4 w-4" /> {ending ? 'Generating report…' : 'End interview'}
             </Button>
           </div>
         </div>
 
-        {sendError && (
-          <div
-            role="alert"
-            className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
-          >
-            <span className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4" /> {sendError}
-            </span>
-            <Button size="sm" variant="secondary" onClick={sendMessage} disabled={streaming}>
-              Retry
-            </Button>
+        {progress && (
+          <div className="mb-4">
+            <div className="mb-1 flex justify-between text-xs text-slate-400">
+              <span>
+                {concluded
+                  ? 'All questions covered'
+                  : `Question ${progress.current} of ${progress.total}${progress.focus ? ` · ${progress.focus}` : ''}`}
+              </span>
+              <span>
+                {progress.answers} answer{progress.answers === 1 ? '' : 's'}
+              </span>
+            </div>
+            <Progress value={progressPercent} aria-label="Interview progress" />
           </div>
         )}
 
-        {warnings.length > 0 && (
-          <div className="mb-4 rounded-lg border border-amber-800 bg-amber-950/30 p-3">
-            {warnings.map((w, i) => (
-              <p key={i} className="flex items-center gap-2 text-sm text-amber-300">
-                <AlertTriangle className="h-4 w-4" /> {w}
-              </p>
-            ))}
+        {examMode && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              Exam mode: no hints. Leaving this window and pasting are recorded and shown in your
+              report
+              {integrity.focusLost + integrity.pastes > 0 &&
+                ` (so far: ${integrity.focusLost} focus change${integrity.focusLost === 1 ? '' : 's'}, ${integrity.pastes} paste${integrity.pastes === 1 ? '' : 's'})`}
+              .
+            </p>
+          </div>
+        )}
+
+        {sendError && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
+          >
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" /> {sendError}
+            </span>
+            {failedAnswer && (
+              <Button size="sm" variant="secondary" onClick={() => void submit(failedAnswer)} disabled={busy}>
+                Retry
+              </Button>
+            )}
           </div>
         )}
 
         <Card className="mb-4 flex-1">
-          <CardContent className="flex h-[55vh] flex-col overflow-y-auto p-4">
+          <CardContent
+            className="flex h-[55vh] flex-col overflow-y-auto p-4"
+            role="log"
+            aria-live="polite"
+            aria-label="Interview transcript"
+          >
             {interview.messages.map((msg) => (
               <div
                 key={msg.id}
                 className={`mb-4 flex ${msg.role === 'CANDIDATE' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
+                  className={`max-w-[85%] whitespace-pre-wrap rounded-xl px-4 py-3 text-sm ${
                     msg.role === 'CANDIDATE'
                       ? 'bg-indigo-600 text-white'
                       : 'bg-slate-800 text-slate-100'
-                  }`}
+                  } ${msg.id.startsWith('pending-') ? 'opacity-70' : ''}`}
                 >
                   {msg.role === 'INTERVIEWER' && (
                     <p className="mb-1 text-xs font-medium text-indigo-300">Interviewer</p>
@@ -323,7 +446,7 @@ export default function LiveInterviewPage() {
 
             {streamBuffer && (
               <div className="mb-4 flex justify-start">
-                <div className="max-w-[80%] rounded-xl bg-slate-800 px-4 py-3 text-sm">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-xl bg-slate-800 px-4 py-3 text-sm">
                   <p className="mb-1 text-xs font-medium text-indigo-300">Interviewer</p>
                   {streamBuffer}
                   <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-indigo-400" />
@@ -332,10 +455,10 @@ export default function LiveInterviewPage() {
             )}
 
             {streaming && !streamBuffer && (
-              <div className="mb-4 flex justify-start" aria-live="polite">
+              <div className="mb-4 flex justify-start" role="status">
                 <div className="flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-3 text-sm text-slate-400">
-                  <span className="text-xs font-medium text-indigo-300">Interviewer</span>
-                  <span className="flex gap-1">
+                  <span className="text-xs font-medium text-indigo-300">Interviewer is thinking</span>
+                  <span className="flex gap-1" aria-hidden>
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]" />
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]" />
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500" />
@@ -343,36 +466,71 @@ export default function LiveInterviewPage() {
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
+            <div ref={transcriptEndRef} />
           </CardContent>
         </Card>
 
-        <div className="flex gap-2">
-          <Button
-            variant={isListening ? 'destructive' : 'secondary'}
-            size="icon"
-            onClick={isListening ? () => recognitionRef.current?.stop() : startListening}
-            disabled={streaming}
-          >
-            {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </Button>
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type your answer... (think aloud, be specific)"
-            className="min-h-[60px] flex-1 resize-none"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            }}
-            disabled={streaming}
-          />
-          <Button onClick={sendMessage} disabled={streaming || !input.trim()} size="icon">
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
+        {concluded ? (
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-emerald-800 bg-emerald-950/30 p-5 text-center sm:flex-row sm:justify-between sm:text-left">
+            <p className="flex items-center gap-2 text-sm text-emerald-200">
+              <CheckCircle2 className="h-5 w-5 shrink-0" />
+              The interviewer has covered every question. Generate your report to see detailed
+              feedback.
+            </p>
+            <Button onClick={endInterview} disabled={busy}>
+              {ending ? 'Generating report…' : 'Generate report'}
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2">
+              {recognition.supported && (
+                <Button
+                  variant={recognition.listening ? 'destructive' : 'secondary'}
+                  size="icon"
+                  onClick={() =>
+                    recognition.listening ? recognition.stop() : recognition.start(input)
+                  }
+                  disabled={busy}
+                  aria-label={recognition.listening ? 'Stop voice input' : 'Answer by voice'}
+                  aria-pressed={recognition.listening}
+                >
+                  {recognition.listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </Button>
+              )}
+              <label htmlFor="answer" className="sr-only">
+                Your answer
+              </label>
+              <Textarea
+                id="answer"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={
+                  recognition.listening
+                    ? 'Listening… speak your answer'
+                    : 'Type your answer… (think aloud, be specific). Enter to send, Shift+Enter for a new line.'
+                }
+                className="min-h-[60px] flex-1 resize-none"
+                maxLength={10000}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                disabled={busy}
+              />
+              <Button onClick={handleSend} disabled={busy || !input.trim()} size="icon" aria-label="Send answer">
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+            {recognition.error && (
+              <p className="mt-2 text-xs text-amber-300" role="alert">
+                {recognition.error}
+              </p>
+            )}
+          </>
+        )}
       </main>
     </>
   );

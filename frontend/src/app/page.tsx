@@ -13,7 +13,7 @@ export default function LandingPage() {
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
         <div className="flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 font-bold">
-            IF
+            IP
           </div>
           <span className="text-lg font-semibold">InterviewPilot</span>
         </div>
@@ -28,9 +28,9 @@ export default function LandingPage() {
               </SignUpButton>
             </>
           ) : (
-            <Link href="/dashboard">
-              <Button>Go to dashboard</Button>
-            </Link>
+            <Button asChild>
+              <Link href="/dashboard">Go to dashboard</Link>
+            </Button>
           )}
         </div>
       </header>
@@ -57,17 +57,15 @@ export default function LandingPage() {
                 </Button>
               </SignUpButton>
             ) : (
-              <Link href="/dashboard">
-                <Button size="lg" className="gap-2">
+              <Button asChild size="lg" className="gap-2">
+                <Link href="/dashboard">
                   Go to Dashboard <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
-            )}
-            <Link href="#features">
-              <Button size="lg" variant="secondary">
-                See Features
+                </Link>
               </Button>
-            </Link>
+            )}
+            <Button asChild size="lg" variant="secondary">
+              <Link href="#features">See Features</Link>
+            </Button>
           </div>
         </section>
 
@@ -82,27 +80,27 @@ export default function LandingPage() {
               {
                 icon: Mic,
                 title: 'Live Voice Mode',
-                desc: 'Speech-to-text and text-to-speech for a Zoom-like interview experience.',
+                desc: 'Answer by voice and have questions read aloud, using your browser’s speech APIs (best in Chrome and Edge).',
               },
               {
                 icon: Code2,
                 title: 'Coding Rounds',
-                desc: 'Monaco editor with test cases, timers, and think-aloud follow-ups.',
+                desc: 'Monaco editor with automated visible and hidden tests (JavaScript/TypeScript), progressive hints, and a timer.',
               },
               {
                 icon: Target,
                 title: 'Adaptive AI',
-                desc: 'Remembers weak areas and focuses future interviews on your gaps.',
+                desc: 'Tracks the topics you struggle with and builds them into your next interview plan until you answer them well.',
               },
               {
                 icon: Shield,
-                title: 'Anti-Cheating',
-                desc: 'Focus detection, copy-paste warnings, and exam mode for realistic practice.',
+                title: 'Exam Mode',
+                desc: 'No hints, a stricter interviewer, and focus-change and paste tracking shown in your report.',
               },
               {
                 icon: ArrowRight,
                 title: 'Actionable Reports',
-                desc: 'Scores, knowledge gaps, and a personalized learning roadmap after every session.',
+                desc: 'Rubric-based scores with the reasoning behind each one, question-by-question feedback, and a practice plan.',
               },
             ].map(({ icon: Icon, title, desc }) => (
               <div key={title} className="glass rounded-xl p-6">

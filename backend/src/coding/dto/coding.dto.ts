@@ -1,7 +1,9 @@
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsString, MaxLength, MinLength } from 'class-validator';
+import { SUPPORTED_LANGUAGES } from '../coding.problems';
 
 export class RunCodeDto {
   @IsString()
+  @MaxLength(64)
   problemId: string;
 
   @IsString()
@@ -10,5 +12,6 @@ export class RunCodeDto {
   code: string;
 
   @IsString()
+  @IsIn([...SUPPORTED_LANGUAGES])
   language: string;
 }

@@ -5,11 +5,16 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { createClerkClient, verifyToken } from '@clerk/backend';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedRequest } from '../common/authenticated-request';
+import { IS_PUBLIC_KEY } from './public.decorator';
 
+const ACTIVITY_WRITE_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Registered globally: every route requires a valid Clerk token unless marked `@Public()`. */
 @Injectable()
 export class AuthGuard implements CanActivate {
   private readonly logger = new Logger('AuthGuard');
@@ -17,9 +22,16 @@ export class AuthGuard implements CanActivate {
   constructor(
     private config: ConfigService,
     private prisma: PrismaService,
+    private reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) return true;
+
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const authHeader = request.headers.authorization;
 
@@ -39,10 +51,17 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Authentication is not available');
     }
 
+    // Only accept tokens minted for our own frontend. The localhost origin is
+    // a development convenience and is not trusted in production.
     const frontendOrigin =
       this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
+    const isProduction = this.config.get<string>('NODE_ENV') === 'production';
     const authorizedParties = Array.from(
-      new Set([frontendOrigin, 'http://localhost:3000']),
+      new Set(
+        isProduction
+          ? [frontendOrigin]
+          : [frontendOrigin, 'http://localhost:3000'],
+      ),
     );
 
     let clerkId: string;
@@ -78,6 +97,10 @@ export class AuthGuard implements CanActivate {
   private async ensureUser(clerkId: string, secretKey: string) {
     const existing = await this.prisma.user.findUnique({ where: { clerkId } });
     if (existing) {
+      // Avoid a write on every request; activity granularity of a few
+      // minutes is plenty.
+      const lastActive = existing.lastActiveAt?.getTime() ?? 0;
+      if (Date.now() - lastActive < ACTIVITY_WRITE_INTERVAL_MS) return existing;
       return this.prisma.user.update({
         where: { clerkId },
         data: { lastActiveAt: new Date() },

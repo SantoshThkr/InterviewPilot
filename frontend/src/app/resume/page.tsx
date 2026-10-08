@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Upload, FileText } from 'lucide-react';
-import { useAuth } from '@clerk/nextjs';
 import { AppNav } from '@/components/layout/app-nav';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useApiAuth } from '@/hooks/use-api-auth';
@@ -21,7 +20,6 @@ interface Resume {
 
 export default function ResumePage() {
   const { authFetch } = useApiAuth();
-  const { getToken } = useAuth();
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,21 +41,12 @@ export default function ResumePage() {
     setUploading(true);
     setError(null);
     try {
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('That file is larger than 5MB.');
+      }
       const formData = new FormData();
       formData.append('file', file);
-      const token = await getToken();
-
-      const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-      const res = await fetch(`${API_URL}/api/resume/upload`, {
-        method: 'POST',
-        body: formData,
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { message?: string } | null;
-        throw new Error(body?.message ?? 'Upload failed. Please try again.');
-      }
+      await authFetch('/resume/upload', { method: 'POST', body: formData });
       loadResumes();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
@@ -91,19 +80,22 @@ export default function ResumePage() {
         <Card className="mb-6">
           <CardHeader>
             <CardTitle>Upload Resume</CardTitle>
-            <CardDescription>PDF, DOCX, or TXT — max 5MB</CardDescription>
+            <CardDescription>
+              PDF, DOCX, or TXT — max 5MB. Your newest upload becomes the active resume used for
+              interview questions.
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <label className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-700 p-10 transition-colors hover:border-indigo-500 hover:bg-slate-900/50">
+            <label className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-700 p-10 text-center transition-colors focus-within:border-indigo-500 hover:border-indigo-500 hover:bg-slate-900/50">
               <Upload className="mb-4 h-10 w-10 text-slate-500" />
               <p className="mb-2 font-medium">
-                {uploading ? 'Analyzing resume...' : 'Click to upload'}
+                {uploading ? 'Reading and analyzing your resume…' : 'Click to upload'}
               </p>
               <p className="text-sm text-slate-500">AI will extract companies, projects, and tech stack</p>
               <input
                 type="file"
-                accept=".pdf,.doc,.docx,.txt"
-                className="hidden"
+                accept=".pdf,.docx,.txt"
+                className="sr-only"
                 onChange={handleUpload}
                 disabled={uploading}
               />
